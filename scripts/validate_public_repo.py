@@ -86,6 +86,7 @@ def validate_openai_yaml() -> None:
 
 def validate_readme_contract() -> None:
     readme = read_text(ROOT / "README.md")
+    require("What This Is" in readme, "README.md must explain what the skill is.")
     require("spawn_agent" in readme, "README.md must document spawn_agent compatibility.")
     require("--ref" in readme, "README.md must include a pinned --ref install example.")
     require("SKILL.md" in readme, "README.md must state the public authority surface.")

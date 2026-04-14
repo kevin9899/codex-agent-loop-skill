@@ -4,6 +4,14 @@
 
 영문 문서는 [README.md](./README.md)를 참고하세요.
 
+## 이게 뭔가요
+
+`agent-loop`는 로컬 메모, 파일 경로, 마크다운 링크, 거친 목표 설명을 Codex용 소프트웨어 개선 루프로 바꿔주는 Codex 사이드 오케스트레이션 스킬입니다.
+
+- 먼저 로컬 소스 자료를 읽습니다.
+- research, staged plan, challenge, bounded stage execution, verification, reassessment 순서로 진행합니다.
+- 제품 기능, SDK, 저장소 런타임 명령이 아니라 Codex 자체를 위한 운영 워크플로입니다.
+
 ## 설치 전 확인
 
 `agent-loop`는 단순 프롬프트 스킬이 아닙니다. 다음 기능을 지원하는 Codex 런타임이 필요합니다.
@@ -20,7 +28,7 @@
 ### Bash / zsh
 
 ```bash
-REF=v0.1.2
+REF=v0.1.3
 python "${CODEX_HOME:-$HOME/.codex}/skills/.system/skill-installer/scripts/install-skill-from-github.py" \
   --repo kevin9899/codex-agent-loop-skill \
   --ref "$REF" \
@@ -30,7 +38,7 @@ python "${CODEX_HOME:-$HOME/.codex}/skills/.system/skill-installer/scripts/insta
 ### PowerShell
 
 ```powershell
-$ref = "v0.1.2"
+$ref = "v0.1.3"
 $codexHome = if ($env:CODEX_HOME) { $env:CODEX_HOME } else { Join-Path $HOME ".codex" }
 python (Join-Path $codexHome "skills/.system/skill-installer/scripts/install-skill-from-github.py") `
   --repo kevin9899/codex-agent-loop-skill `
@@ -42,7 +50,7 @@ python (Join-Path $codexHome "skills/.system/skill-installer/scripts/install-ski
 
 ```bash
 python "${CODEX_HOME:-$HOME/.codex}/skills/.system/skill-installer/scripts/install-skill-from-github.py" \
-  --url https://github.com/kevin9899/codex-agent-loop-skill/tree/v0.1.2/agent-loop
+  --url https://github.com/kevin9899/codex-agent-loop-skill/tree/v0.1.3/agent-loop
 ```
 
 ### 수동 복사 대안

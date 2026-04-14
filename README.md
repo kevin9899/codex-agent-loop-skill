@@ -4,6 +4,14 @@ Public GitHub repo for installing the `agent-loop` Codex skill.
 
 한국어 문서는 [README.ko.md](./README.ko.md)를 참고하세요.
 
+## What This Is
+
+`agent-loop` is a Codex-side orchestration skill for turning a local note, path, markdown link, or rough goal into a disciplined software-improvement loop.
+
+- It reads the local source material first.
+- It runs research, builds a staged plan, challenges that plan, executes one bounded stage, verifies it, and reassesses what to do next.
+- It is not a product feature, SDK, or repo runtime command. It is an operator workflow for Codex itself.
+
 ## Before You Install
 
 `agent-loop` is not a generic prompt-only skill. It requires a Codex runtime that supports:
@@ -20,7 +28,7 @@ The recommended install path is a pinned Git ref instead of floating `main`.
 ### Bash / zsh
 
 ```bash
-REF=v0.1.2
+REF=v0.1.3
 python "${CODEX_HOME:-$HOME/.codex}/skills/.system/skill-installer/scripts/install-skill-from-github.py" \
   --repo kevin9899/codex-agent-loop-skill \
   --ref "$REF" \
@@ -30,7 +38,7 @@ python "${CODEX_HOME:-$HOME/.codex}/skills/.system/skill-installer/scripts/insta
 ### PowerShell
 
 ```powershell
-$ref = "v0.1.2"
+$ref = "v0.1.3"
 $codexHome = if ($env:CODEX_HOME) { $env:CODEX_HOME } else { Join-Path $HOME ".codex" }
 python (Join-Path $codexHome "skills/.system/skill-installer/scripts/install-skill-from-github.py") `
   --repo kevin9899/codex-agent-loop-skill `
@@ -42,7 +50,7 @@ python (Join-Path $codexHome "skills/.system/skill-installer/scripts/install-ski
 
 ```bash
 python "${CODEX_HOME:-$HOME/.codex}/skills/.system/skill-installer/scripts/install-skill-from-github.py" \
-  --url https://github.com/kevin9899/codex-agent-loop-skill/tree/v0.1.2/agent-loop
+  --url https://github.com/kevin9899/codex-agent-loop-skill/tree/v0.1.3/agent-loop
 ```
 
 ### Manual Copy Fallback
