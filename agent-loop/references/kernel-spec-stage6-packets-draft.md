@@ -2,6 +2,8 @@
 
 This draft is a supporting design appendix for the public skill. `SKILL.md` remains the only public operator contract.
 
+These references are non-authoritative maintainer appendices. They may explain lower-level lifecycle or packet detail, but they do not add, widen, or override the public operator contract in `SKILL.md`.
+
 This draft turns the Stage 1-5 kernel into minimal role packets.
 
 It does not finalize public skill reflection or repo-local agent assets yet.

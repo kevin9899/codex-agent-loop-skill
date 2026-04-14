@@ -19,6 +19,17 @@ def main() -> int:
         assert (dest / "SKILL.md").is_file()
         assert (dest / "agents" / "openai.yaml").is_file()
         assert (dest / "references").is_dir()
+        for required_ref in (
+            "process-architecture.md",
+            "contracts-and-rules.md",
+            "kernel-spec-stage1-3-draft.md",
+            "kernel-spec-stage5-oracle-draft.md",
+            "kernel-spec-stage6-packets-draft.md",
+            "kernel-spec-stage7-packet-templates-draft.md",
+            "project-adaptation.md",
+            "profile-sync.md",
+        ):
+            assert (dest / "references" / required_ref).is_file()
     print("Smoke install passed.")
     return 0
 

@@ -5,10 +5,15 @@ from __future__ import annotations
 
 from pathlib import Path
 import re
-import sys
+
+from public_release_manifest import OWNER_REPO, REF, SKILL_PATH, URL
 
 
 ROOT = Path(__file__).resolve().parents[1]
+AUTHORITY_BANNER = (
+    "These references are non-authoritative maintainer appendices. "
+    "They may explain lower-level lifecycle or packet detail, but they do not add, widen, or override the public operator contract in `SKILL.md`."
+)
 REQUIRED_FILES = [
     ROOT / "README.md",
     ROOT / "LICENSE",
@@ -31,6 +36,7 @@ BANNED_PATTERNS = [
 ]
 LINK_RE = re.compile(r"\[[^\]]+\]\(([^)]+)\)")
 FENCED_CODE_RE = re.compile(r"```.*?```", re.S)
+FRONTMATTER_RE = re.compile(r"^---\n(.*?)\n---\n", re.S)
 
 
 def iter_text_files() -> list[Path]:
@@ -59,9 +65,23 @@ def validate_required_files() -> None:
 
 def validate_skill_frontmatter() -> None:
     skill_md = read_text(ROOT / "agent-loop" / "SKILL.md")
-    require(skill_md.startswith("---\n"), "SKILL.md is missing YAML frontmatter.")
-    require("\nname: agent-loop\n" in skill_md, "SKILL.md frontmatter is missing name.")
-    require("\ndescription:" in skill_md, "SKILL.md frontmatter is missing description.")
+    match = FRONTMATTER_RE.match(skill_md)
+    require(match is not None, "SKILL.md is missing YAML frontmatter.")
+    frontmatter = match.group(1)
+    require(
+        re.search(r"(?m)^name:\s*agent-loop\s*$", frontmatter) is not None,
+        "SKILL.md frontmatter is missing name.",
+    )
+    require(
+        re.search(r"(?m)^description:\s*.+$", frontmatter) is not None,
+        "SKILL.md frontmatter is missing description.",
+    )
+
+
+def validate_openai_yaml() -> None:
+    openai_yaml = read_text(ROOT / "agent-loop" / "agents" / "openai.yaml")
+    for key in ("display_name:", "short_description:", "default_prompt:"):
+        require(key in openai_yaml, f"agents/openai.yaml is missing {key}")
 
 
 def validate_readme_contract() -> None:
@@ -69,6 +89,40 @@ def validate_readme_contract() -> None:
     require("spawn_agent" in readme, "README.md must document spawn_agent compatibility.")
     require("--ref" in readme, "README.md must include a pinned --ref install example.")
     require("SKILL.md" in readme, "README.md must state the public authority surface.")
+    require("First Run" in readme, "README.md must include a post-install smoke test.")
+    require("$loop" in readme, "README.md must include a concrete $loop usage example.")
+    require("Manual Copy Fallback" in readme, "README.md must include a manual copy install fallback.")
+    require(OWNER_REPO in readme, "README.md must include the public owner/repo coordinate.")
+    require(REF in readme, "README.md must include the pinned release ref.")
+    require(URL in readme, "README.md must include the public GitHub URL install form.")
+    require(SKILL_PATH in readme, "README.md must include the public skill path.")
+    require(AUTHORITY_BANNER in readme, "README.md must include the non-authoritative appendix banner.")
+
+
+def validate_skill_reference_files() -> None:
+    skill_md = read_text(ROOT / "agent-loop" / "SKILL.md")
+    require(AUTHORITY_BANNER in skill_md, "SKILL.md must include the non-authoritative appendix banner.")
+    refs = sorted(
+        {
+            ref
+            for ref in re.findall(r"`(references/[^`]+\.md)`", skill_md)
+            if "*" not in ref
+        }
+    )
+    require(refs, "SKILL.md must mention the bundled reference appendices.")
+    for ref in refs:
+        require((ROOT / "agent-loop" / ref).is_file(), f"SKILL.md references a missing file: {ref}")
+    for draft_name in (
+        "kernel-spec-stage1-3-draft.md",
+        "kernel-spec-stage5-oracle-draft.md",
+        "kernel-spec-stage6-packets-draft.md",
+        "kernel-spec-stage7-packet-templates-draft.md",
+    ):
+        draft_text = read_text(ROOT / "agent-loop" / "references" / draft_name)
+        require(
+            AUTHORITY_BANNER in draft_text,
+            f"{draft_name} must include the non-authoritative appendix banner.",
+        )
 
 
 def validate_banned_patterns() -> None:
@@ -103,7 +157,9 @@ def validate_relative_links() -> None:
 def main() -> int:
     validate_required_files()
     validate_skill_frontmatter()
+    validate_openai_yaml()
     validate_readme_contract()
+    validate_skill_reference_files()
     validate_banned_patterns()
     validate_relative_links()
     print("Public repo validation passed.")

@@ -11,11 +11,25 @@ description: "Use via `$loop` or `$agent-loop` inside Codex when you need to tur
 
 Within this public repo, `SKILL.md` is the only authoritative operator procedure. Supporting references exist for design depth and implementation rationale; some intentionally retain `*-draft.md` filenames. If any supporting reference differs from `SKILL.md`, follow `SKILL.md`.
 
+These references are non-authoritative maintainer appendices. They may explain lower-level lifecycle or packet detail, but they do not add, widen, or override the public operator contract in `SKILL.md`.
+
 ## Runtime Requirements
 
 - a Codex runtime with delegated `spawn_agent` support
 - delegated calls must allow explicit `model` and `reasoning_effort` fields
 - if the runtime cannot satisfy those requirements, this skill is not supported even if installation succeeds
+
+## Quick Start
+
+For ordinary use, keep the first pass narrow:
+
+1. feed `$loop` a local file, markdown link, or pasted goal
+2. read the host contract before planning
+3. resolve one strongest-model pin and keep all delegated lanes on it
+4. run the exact three research viewpoints and seal one revised plan
+5. either stop at the revised plan for planning-only requests or execute one bounded current stage, verify it, and reassess
+
+Normal operation does not require opening the bundled `references/*.md` appendices. Those are maintainer-only depth docs for refining or auditing the skill itself.
 
 Primary entrypoints:
 
@@ -166,14 +180,18 @@ $loop 학습 세션에서 오류나 버그를 찾고 개선점을 찾은 뒤 수
      - a stage-close summary, handoff summary, or final close-out cannot substitute for any canonical receipt
      - if the pause reason is recorded time or resource ceiling, name the concrete measured ceiling, ensure that ceiling basis and current consumption are already recorded in the latest authoritative `decision_ledger` lineage, and ensure the latest sealed handoff already exposes the cold-start-legal resume path; if `run_decision=continue`, seal the newborn-cycle `research` handoff before yielding
      - if no legal stop posture and no legal pause reason can be named concretely, ending the turn is a loop failure
-18. Read `references/process-architecture.md` for the end-to-end loop shape.
-19. Read `references/contracts-and-rules.md` before changing role contracts, challenge rules, execution gating, verification rules, or evidence policy.
-20. Read `references/kernel-spec-stage1-3-draft.md` before changing lifecycle control, authority boundaries, handoff rows, invalidation routing, claim recovery, or termination behavior.
-21. Read `references/kernel-spec-stage5-oracle-draft.md` before changing dry-runs, conformance checks, mismatch routing expectations, or seal-point validation behavior.
-22. Read `references/kernel-spec-stage6-packets-draft.md` before changing canonical role packet fields or role authority.
-23. Read `references/kernel-spec-stage7-packet-templates-draft.md` before changing reusable packet skeletons, handoff row templates, or selector tables.
-24. Read `references/project-adaptation.md` only when the revised plan needs to land inside a repository.
-25. Read `references/profile-sync.md` only when you intentionally maintain a repo-local loop profile layer.
+## Maintainer Reference Map
+
+Only open these appendices when you are maintaining, extending, or auditing `agent-loop` itself:
+
+- Read `references/process-architecture.md` for the end-to-end loop shape.
+- Read `references/contracts-and-rules.md` before changing role contracts, challenge rules, execution gating, verification rules, or evidence policy.
+- Read `references/kernel-spec-stage1-3-draft.md` before changing lifecycle control, authority boundaries, handoff rows, invalidation routing, claim recovery, or termination behavior.
+- Read `references/kernel-spec-stage5-oracle-draft.md` before changing dry-runs, conformance checks, mismatch routing expectations, or seal-point validation behavior.
+- Read `references/kernel-spec-stage6-packets-draft.md` before changing role packet fields or role authority.
+- Read `references/kernel-spec-stage7-packet-templates-draft.md` before changing reusable packet skeletons, handoff row templates, or selector tables.
+- Read `references/project-adaptation.md` only when the revised plan needs to land inside a repository.
+- Read `references/profile-sync.md` only when you intentionally maintain a repo-local loop profile layer.
 
 ## Preserve These Invariants
 
@@ -215,7 +233,7 @@ $loop 학습 세션에서 오류나 버그를 찾고 개선점을 찾은 뒤 수
 - Research, challenge, worker, verification, and integration outputs are draft candidates until the integrator seals the next authoritative artifact.
 - `dispatchable_slice_specs` are authoritative. `Parallel Worker Lanes` is a human-readable derived view only.
 - Post-close invalidation is never bypassed. If a closed cycle later drifts or reopens a blocker, same-cycle `verify` must revalidate before any new cycle may proceed.
-- Use the sealed handoff row templates and the successor selector from `references/kernel-spec-stage7-packet-templates-draft.md` rather than reconstructing resume legality from scratch.
+- If you edit resume-legality internals for this skill, keep them compatible with the Stage 7 templates in `references/kernel-spec-stage7-packet-templates-draft.md` rather than reconstructing them from scratch.
 
 ## Default Revised Plan Shape
 
@@ -265,7 +283,7 @@ If the source already contains `Run Intent`, treat it as advisory source text on
 
 ## Challenge Output Shape
 
-Use the canonical Stage 6 / Stage 7 `challenge_result_candidate` and finding template rather than reauthoring a second local schema here.
+Keep challenge outputs structured and consistent. When editing packet internals for this skill, keep challenge outputs compatible with the Stage 6 and Stage 7 reference shapes.
 
 Use these three viewpoints for research, plan challenge, and verify challenge:
 
@@ -414,7 +432,7 @@ During goal-level reassessment, especially when the current plan appears exhaust
 - When execution touches a repository, respect the repo contract, preserve unrelated dirty changes, and commit only verified stages.
 - If the user only wants `$loop` fixed or refined, end after reconstructing and challenge-reviewing the plan through the same planning-deliverable closure rules.
 
-## References
+## Maintainer Appendices
 
 - `references/process-architecture.md`
 - `references/contracts-and-rules.md`

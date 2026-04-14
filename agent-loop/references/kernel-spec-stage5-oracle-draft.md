@@ -2,6 +2,8 @@
 
 This draft is a supporting design appendix for the public skill. `SKILL.md` remains the only public operator contract.
 
+These references are non-authoritative maintainer appendices. They may explain lower-level lifecycle or packet detail, but they do not add, widen, or override the public operator contract in `SKILL.md`.
+
 This draft turns the Stage 1-4 kernel into falsifiable dry-run oracles.
 
 It does not finalize worker packets, challenger packets, verifier packets, or public skill reflection.
