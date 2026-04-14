@@ -1,6 +1,6 @@
 # Stage 1-4 Kernel Spec Draft
 
-This draft does not replace the public skill documents yet. It is a working kernel spec for the next challenge rounds.
+This draft is published as a supporting design appendix for the public skill. `SKILL.md` remains the only public operator contract, and this draft may evolve between tagged releases.
 
 ## Scope
 

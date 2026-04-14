@@ -1,10 +1,12 @@
 # Stage 7 Packet Templates Draft
 
-This draft turns the validated Stage 6 packet contract into concrete reusable packet templates.
+This draft is a supporting design appendix for the public skill. `SKILL.md` remains the only public operator contract.
+
+This draft turns the Stage 6 packet contract into concrete reusable packet templates.
 
 It does not yet rewrite `SKILL.md` or repo-local agent assets.
 
-It assumes these files are already authoritative:
+It assumes these files remain the current supporting references:
 
 - [kernel-spec-stage1-3-draft.md](./kernel-spec-stage1-3-draft.md)
 - [kernel-spec-stage5-oracle-draft.md](./kernel-spec-stage5-oracle-draft.md)

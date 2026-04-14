@@ -17,9 +17,9 @@
 - Keep the latest sealed `handoff_packet` plus fresh preflight as the only legal resume authority.
 - Keep post-close invalidation on the same cycle until fresh `verify` clears it.
 
-## Canonical Contract Layers
+## Supporting Contract Layers
 
-Use this file for the operating rules. Use the validated kernel docs when the question is about exact lifecycle or packet shape:
+Use this file for supporting operating rules and implementation detail. `SKILL.md` remains the only public operator contract; if wording differs, follow `SKILL.md`. Use the bundled kernel references when the question is about deeper lifecycle or packet shape:
 
 - `kernel-spec-stage1-3-draft.md`
   Lifecycle control, handoff legality, claim recovery, post-close invalidation, and termination behavior. The filename is legacy, but it now carries the validated Stage 1-4 kernel.

@@ -16,11 +16,11 @@ This skill defines a reusable personal `$loop` process for software work. The co
 
 The loop is not "let one giant agent keep thinking forever," and it is not "add a `/loop` runtime feature to the repo." It is a controlled Codex-side automation workflow with explicit inputs, explicit role lanes, explicit challenge gates, explicit verification, stage commits, and repeated improvement cycles until later `goal_reassessment -> run_decision` decides continue or stop for the goal.
 
-`SKILL.md` remains the canonical reflected operator procedure. This file is the mental-model layer.
+`SKILL.md` remains the only public operator contract in this repo. This file is a supporting mental-model layer and does not override `SKILL.md`.
 
-## Canonical Detail Layers
+## Supporting Detail Layers
 
-Use this file for the high-level story of the loop. Use the validated detail layers when the work depends on exact lifecycle or packet rules:
+Use this file for the high-level story of the loop. Use the bundled design references when the work depends on exact lifecycle or packet rules:
 
 - `kernel-spec-stage1-3-draft.md`
   Lifecycle control, authority boundaries, handoff rows, invalidation, recovery, and termination. The filename is legacy, but it now carries the validated Stage 1-4 kernel.

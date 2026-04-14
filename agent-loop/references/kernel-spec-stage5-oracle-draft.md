@@ -1,10 +1,12 @@
 # Stage 5 Oracle Draft
 
+This draft is a supporting design appendix for the public skill. `SKILL.md` remains the only public operator contract.
+
 This draft turns the Stage 1-4 kernel into falsifiable dry-run oracles.
 
 It does not finalize worker packets, challenger packets, verifier packets, or public skill reflection.
 
-It assumes [kernel-spec-stage1-3-draft.md](./kernel-spec-stage1-3-draft.md) is the source-of-truth kernel for lifecycle, handoff, evidence, and worker ownership behavior.
+It assumes [kernel-spec-stage1-3-draft.md](./kernel-spec-stage1-3-draft.md) is the current kernel reference for lifecycle, handoff, evidence, and worker ownership behavior.
 
 If Stage 5 passes, the next downstream packet-contract work lives in [kernel-spec-stage6-packets-draft.md](./kernel-spec-stage6-packets-draft.md).
 

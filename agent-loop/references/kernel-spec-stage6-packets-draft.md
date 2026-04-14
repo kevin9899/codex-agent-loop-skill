@@ -1,10 +1,12 @@
 # Stage 6 Packet Draft
 
-This draft turns the validated Stage 1-5 kernel into minimal role packets.
+This draft is a supporting design appendix for the public skill. `SKILL.md` remains the only public operator contract.
+
+This draft turns the Stage 1-5 kernel into minimal role packets.
 
 It does not finalize public skill reflection or repo-local agent assets yet.
 
-It assumes these files are already authoritative for lifecycle and oracle behavior:
+It assumes these files remain the current supporting references for lifecycle and oracle behavior:
 
 - [kernel-spec-stage1-3-draft.md](./kernel-spec-stage1-3-draft.md)
 - [kernel-spec-stage5-oracle-draft.md](./kernel-spec-stage5-oracle-draft.md)

@@ -5,11 +5,17 @@ description: "Use via `$loop` or `$agent-loop` inside Codex when you need to tur
 
 # Agent Loop
 
-`agent-loop` is a personal Codex automation skill. Its primary job is not to add a `/loop` product feature to a repository. Its primary job is to help Codex read local source material, analyze the current target, reconstruct that material into an executable staged plan, attack the work through exact viewpoint-separated research and challenge lanes, execute one stage at a time, verify that stage through multiple challenge viewpoints again, close the stage through commit when applicable or through rescope / escalate when not, and keep improving the plan until later `goal_reassessment -> run_decision` decides continue or stop for the original goal. The validated kernel behind that flow now includes explicit lifecycle control, falsifiable dry-run oracles, canonical role packets, and reusable packet templates.
+`agent-loop` is a personal Codex automation skill. Its primary job is not to add a `/loop` product feature to a repository. Its primary job is to help Codex read local source material, analyze the current target, reconstruct that material into an executable staged plan, attack the work through exact viewpoint-separated research and challenge lanes, execute one stage at a time, verify that stage through multiple challenge viewpoints again, close the stage through commit when applicable or through rescope / escalate when not, and keep improving the plan until later `goal_reassessment -> run_decision` decides continue or stop for the original goal. The public bundle includes the operator contract in `SKILL.md` plus deeper design references for lifecycle, oracles, packets, and templates.
 
 ## Operator Surface
 
-Within the reflected docs, `SKILL.md` is the canonical end-to-end operator procedure. Supporting references should explain mental model, invariants, and validated detail layers without reauthoring the full operator checklist.
+Within this public repo, `SKILL.md` is the only authoritative operator procedure. Supporting references exist for design depth and implementation rationale; some intentionally retain `*-draft.md` filenames. If any supporting reference differs from `SKILL.md`, follow `SKILL.md`.
+
+## Runtime Requirements
+
+- a Codex runtime with delegated `spawn_agent` support
+- delegated calls must allow explicit `model` and `reasoning_effort` fields
+- if the runtime cannot satisfy those requirements, this skill is not supported even if installation succeeds
 
 Primary entrypoints:
 
