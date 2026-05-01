@@ -1,8 +1,12 @@
 # Stage 1-4 Kernel Spec Draft
 
-This draft is published as a supporting design appendix for the public skill. `SKILL.md` remains the only public operator contract, and this draft may evolve between tagged releases.
-
 These references are non-authoritative maintainer appendices. They may explain lower-level lifecycle or packet detail, but they do not add, widen, or override the public operator contract in `SKILL.md`.
+
+> Note:
+> In normal `$loop` use, the default delegated Codex mix is 5 lanes; optional Claude evidence is capped to those same 5 viewpoints, and high-difficulty work stays capped at 5 lanes.
+> References below to `exactly three` or `exact-three` describe a legacy kernel viewpoint subset, not the full default execution mix.
+
+This draft does not replace the public skill documents yet. It is a working kernel spec for the next challenge rounds.
 
 ## Scope
 
@@ -223,7 +227,7 @@ No other transitions are legal.
 ### Explicit Planning-Deliverable Completion Rule
 
 If immutable `request_intent=planning_deliverable_only`, the loop must still execute the same
-initial `research -> planning -> plan_challenge -> integrate_plan` path.
+initial `ideation -> research -> planning -> plan_challenge -> integrate_plan` path.
 
 That request intent may never be inferred from `source_packet` content alone.
 
@@ -890,7 +894,7 @@ The integrator owns final verdict issuance.
 
 The merge algorithm is:
 
-1. collect verifier outputs and three verify-challenge outputs
+1. collect verifier outputs and five verify-challenge outputs
 2. normalize each finding into:
    - `finding_id`
    - blocking
@@ -1196,7 +1200,7 @@ Cold-start mismatch-routed `verify` must carry empty `open_write_claims`; any su
 
 This kernel requires Stage 5 to define a falsifiable dry-run oracle per scenario.
 
-Detailed Stage 5 coverage and scenario definitions live in [kernel-spec-stage5-oracle-draft.md](./kernel-spec-stage5-oracle-draft.md).
+Detailed Stage 5 coverage and scenario definitions live in [kernel-spec-stage5-oracle-draft.md](kernel-spec-stage5-oracle-draft.md).
 
 Each scenario must specify:
 

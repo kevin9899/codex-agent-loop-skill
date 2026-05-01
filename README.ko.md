@@ -6,10 +6,12 @@
 
 ## 이게 뭔가요
 
-`agent-loop`는 로컬 메모, 파일 경로, 마크다운 링크, 거친 목표 설명을 Codex용 소프트웨어 개선 루프로 바꿔주는 Codex 사이드 오케스트레이션 스킬입니다.
+`agent-loop`는 로컬 메모, 파일 경로, 마크다운 링크, 거친 목표 설명을 명시적 증거, 검증, stop gate가 있는 재개 가능한 Codex용 소프트웨어 개선 루프로 바꿔주는 Codex 사이드 오케스트레이션 스킬입니다.
 
 - 먼저 로컬 소스 자료를 읽습니다.
 - research, staged plan, challenge, bounded stage execution, verification, reassessment 순서로 진행합니다.
+- `$loop` 자체를 사용 가능한 Codex 위임 lane 사용 권한으로 취급하되, stop 주장은 fresh five-agent proof 뒤에만 허용합니다.
+- 이 공개 패키지는 개인 경로, credential, 프로젝트 전용 API key, 로컬 run artifact를 포함하지 않도록 정리되어 있습니다.
 - 제품 기능, SDK, 저장소 런타임 명령이 아니라 Codex 자체를 위한 운영 워크플로입니다.
 
 ## 설치 전 확인
@@ -28,7 +30,7 @@
 ### Bash / zsh
 
 ```bash
-REF=v0.1.3
+REF=v0.2.0
 python "${CODEX_HOME:-$HOME/.codex}/skills/.system/skill-installer/scripts/install-skill-from-github.py" \
   --repo kevin9899/codex-agent-loop-skill \
   --ref "$REF" \
@@ -38,7 +40,7 @@ python "${CODEX_HOME:-$HOME/.codex}/skills/.system/skill-installer/scripts/insta
 ### PowerShell
 
 ```powershell
-$ref = "v0.1.3"
+$ref = "v0.2.0"
 $codexHome = if ($env:CODEX_HOME) { $env:CODEX_HOME } else { Join-Path $HOME ".codex" }
 python (Join-Path $codexHome "skills/.system/skill-installer/scripts/install-skill-from-github.py") `
   --repo kevin9899/codex-agent-loop-skill `
@@ -50,7 +52,7 @@ python (Join-Path $codexHome "skills/.system/skill-installer/scripts/install-ski
 
 ```bash
 python "${CODEX_HOME:-$HOME/.codex}/skills/.system/skill-installer/scripts/install-skill-from-github.py" \
-  --url https://github.com/kevin9899/codex-agent-loop-skill/tree/v0.1.3/agent-loop
+  --url https://github.com/kevin9899/codex-agent-loop-skill/tree/v0.2.0/agent-loop
 ```
 
 ### 수동 복사 대안
@@ -72,7 +74,7 @@ $loop [Plan](./docs/plan.md:12)
 ```
 
 3. 기대 결과:
-   Codex가 소스를 읽고 strongest-model pin 하나를 확정한 뒤, 계획 전에 세 개의 research lane을 엽니다.
+   Codex가 소스를 읽고 strongest-model pin 하나를 확정하고 loop capability state를 기록한 뒤, 계획이나 최종 proof 전에 필요한 viewpoint-separated lane을 엽니다.
 4. 미지원 런타임 신호:
    Codex가 `spawn_agent` 지원 부족을 보고하거나 명시적인 `model`, `reasoning_effort` 필드를 보낼 수 없다고 나오면 이 스킬과 호환되지 않는 런타임입니다.
 

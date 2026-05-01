@@ -1,5 +1,13 @@
 # Process Architecture
 
+> Note:
+> The default `$loop` profile is now the pragmatic file-backed supervisor described in `../SKILL.md`.
+> This document is a higher-rigor architecture layer for environments that actually provide durable delegated runtime support.
+> Do not treat the receipt-heavy same-invocation protocol below as the default legality gate for normal Codex-side `$loop` use.
+> The default live Codex contract is `5 Codex` research, `5 Codex` plan challenge, local execution, fresh `5 Codex` verify, and `5 Codex` autonomous halt review.
+> Claude is opt-in evidence only and must not be counted unless the user explicitly requested Claude for that run.
+> References below to `exactly three` or `exact-three` describe a legacy kernel viewpoint subset, not the pragmatic default execution mix.
+
 ## What This Skill Actually Does
 
 This skill defines a reusable personal `$loop` process for software work. The core idea is:
@@ -16,11 +24,11 @@ This skill defines a reusable personal `$loop` process for software work. The co
 
 The loop is not "let one giant agent keep thinking forever," and it is not "add a `/loop` runtime feature to the repo." It is a controlled Codex-side automation workflow with explicit inputs, explicit role lanes, explicit challenge gates, explicit verification, stage commits, and repeated improvement cycles until later `goal_reassessment -> run_decision` decides continue or stop for the goal.
 
-`SKILL.md` remains the only public operator contract in this repo. This file is a supporting mental-model layer and does not override `SKILL.md`.
+`SKILL.md` remains the canonical reflected operator procedure. This file is the higher-rigor mental-model layer.
 
-## Supporting Detail Layers
+## Canonical Detail Layers
 
-Use this file for the high-level story of the loop. Use the bundled design references when the work depends on exact lifecycle or packet rules:
+Use this file for the high-level story of the loop. Use the validated detail layers when the work depends on exact lifecycle or packet rules:
 
 - `kernel-spec-stage1-3-draft.md`
   Lifecycle control, authority boundaries, handoff rows, invalidation, recovery, and termination. The filename is legacy, but it now carries the validated Stage 1-4 kernel.
@@ -68,12 +76,21 @@ This distinction matters because:
 
 The loop is orchestrated through explicit role lanes:
 
+- `ideation`
+  Collects divergent candidate approaches, outside methods, prior art, product
+  patterns, and risky hypotheses into `ideas.md` before evidence locking. Use
+  3 viewpoints by default, 0 when `ideation_not_material`, and 5 only for
+  high-impact ambiguous goals. The default three Ideation viewpoints are
+  `repo-local alternatives`, `outside patterns`, and `risk hypotheses`, run
+  controller-internally unless delegation materially helps; reserve "delegated
+  lanes" for `spawn_agent` dispatches.
 - `research`
-  Finds current state, risks, alternatives, higher-leverage directions, and late improvement opportunities.
+  Validates or rejects ideation candidates while finding current state, risks,
+  alternatives, higher-leverage directions, and late improvement opportunities.
 - `planning`
   Builds or revises the staged executable plan from source plus research.
 - `challenge`
-  Runs three parallel viewpoints against the plan or the verification artifacts.
+  Runs five parallel viewpoints against the plan or the verification artifacts.
 - `execution`
   Implements the current stage through bounded workers.
 - `verification`
@@ -81,11 +98,13 @@ The loop is orchestrated through explicit role lanes:
 - `orchestration`
   Lives in the main CLI thread and keeps context small, state explicit, and stage boundaries clean.
 
-All of these lanes should use the same resolved strongest hard pin for the live invocation. In many current Codex runtimes this may resolve to `gpt-5.4` with `xhigh`, but the local runtime config and catalog remain authoritative unless the user explicitly overrides them before dispatch. The operator must pass that pair explicitly on every delegated `spawn_agent` call rather than relying on inherited defaults. This loop is not designed to save cost by downshifting research, planning, challenge, verification, or execution judgment.
+All of these lanes should use the same resolved strongest hard pin for the live invocation. In the current local Codex environment that resolves to `gpt-5.5` with `xhigh` unless the runtime config/catalog changes before dispatch. The operator must pass that pair explicitly on every delegated `spawn_agent` call rather than relying on inherited defaults. This loop is not designed to save cost by downshifting research, planning, challenge, verification, or execution judgment.
+
+Research phases may also be enriched by advisory external Claude lanes only when explicit external-Claude opt-in is recorded for the current run and `claude` CLI is installed. By default this mirrors the five core viewpoints; high-difficulty work stays capped at those same five viewpoints. A distinct autonomous-halt `stop_authorization` gate uses the same capped five-viewpoint set on both Codex and Claude sides. These Claude lanes do not replace Codex research judgment. They are parallel evidence sources only, dispatched one fresh session per viewpoint through `scripts/run-claude-research.mjs`, normally pinned to `CLAUDE_CODE_HIGHEST_MODEL` or `opus` with `max` effort, and merged by the main CLI before planning, run-decision, or autonomous-halt classification consumes the result. `claude` CLI availability alone is never authorization. Claude permission bypass flags require a separate explicit opt-in via `--dangerously-bypass-permissions` or `AGENT_LOOP_CLAUDE_BYPASS_PERMISSIONS=1`.
 
 ## Challenge Viewpoints
 
-Run exactly three challengers for each challenge phase:
+Run exactly five challengers for each challenge phase:
 
 1. `architecture_dependency`
    Focus on structure, dependency order, ownership seams, and hidden coupling.
@@ -93,8 +112,12 @@ Run exactly three challengers for each challenge phase:
    Focus on bugs, regressions, missing gates, observability gaps, and weak verification.
 3. `goal_efficiency`
    Focus on drift from source intent, overscope, inefficient sequencing, and better leverage.
+4. `requirement_alignment`
+   Focus on the explicit user ask, success conditions, sequential objectives, and scope drift.
+5. `implementation_quality`
+   Focus on maintainability, test depth, error handling, and production-readiness.
 
-These three viewpoints run:
+These five viewpoints run:
 
 - once before implementation to attack the plan
 - once after implementation and verification artifacts exist to attack the current stage result
@@ -106,11 +129,14 @@ Fresh challengers are required for verification so they are not anchored to thei
 Conceptually, the loop moves through:
 
 - intake and normalization
-- target analysis and research
+- target analysis
+- ideation / discovery before research when material
+- research validation of source facts and ideation candidates
+- opt-in advisory Claude research lanes in parallel with the default Codex research lanes
 - staged plan reconstruction
-- three-viewpoint challenge and revision
+- five-viewpoint challenge and revision
 - one bounded stage of execution
-- verification plus three fresh verify challengers
+- verification plus five fresh verify challengers
 - stage close through commit when applicable, or explicit rescope / escalate when not
 - later goal reassessment and run decision for continue vs stop
 - fresh research and next-cycle reassessment
@@ -120,6 +146,7 @@ The crucial property is that the system should be able to preserve resumability 
 In the validated kernel, that resumability comes from the latest sealed `handoff_packet` after fresh preflight. `revised_plan`, evidence, and claim state are only the handoff-referenced authoritative state consulted through that sealed lineage, not parallel resume authority.
 
 Operationally, the loop must distinguish three end categories: terminal planning-deliverable closure, terminal run stop, and live-invocation pause. Only `stop_goal_saturated|stop_escalation_halt` are terminal run stop postures; `stop_planning_deliverable` remains the separate planning-only terminal planning closure. Reasons such as user pause, approval wait, dirty-change conflict, or recorded time/resource ceiling are non-terminal pauses and are legal only after the latest sealed `handoff_packet` already exposes the authoritative cold-start resume path. A ceiling pause must also name the concrete measured cap, current consumption, whether the stored resume state is directly dispatchable or lineage-only, and the next mandatory dispatch after fresh preflight.
+Any autonomous user-visible pause or stop additionally requires a full `5 Codex` explicit-allow `stop_authorization` gate on the capped viewpoint set. That proof must name the exact `viewpoint_set`, bind all five lane artifacts to one concrete fresh `challenge_round_id`, and each referenced lane artifact must record its own `viewpoint`, matching `challenge_round_id`, and fresh status. Matching `5 Claude` lanes are optional evidence only when Claude was explicitly requested and actually executed for that run. User-requested pauses and pauses that exist only to wait on direct human authority are the narrow exemptions because the halt authority is external rather than autonomous.
 
 That planning-deliverable terminal path is legal only for `run_intent=planning_only`; an implementation-oriented run may not relabel itself as planning-complete to escape the post-close reassessment and termination-classifier path.
 
@@ -139,13 +166,13 @@ The immediate transcript-visible marker for entering that state is a `Reassessme
 
 That means `non_terminal_stage_close -> return control` and `non_terminal_stage_close -> run stop` are both illegal transitions.
 
-The termination classifier belongs to the main run owner / orchestrator. Workers, challengers, and stage integrators may supply evidence to it, but they may not authorize `final`, declare a legal pause, or turn a cycle-local close into a terminal run stop on their own.
+The termination classifier belongs to the main run owner / orchestrator. Workers, challengers, and stage integrators may supply evidence to it, but they may not authorize `final`, declare a legal pause, or turn a cycle-local close into a terminal run stop on their own. For autonomous halts, the classifier must always clear the full `5 Codex` gate first, and may count matching `5 Claude` evidence lanes only when Claude was explicitly requested and actually executed for that run.
 The termination classifier has no hidden transcript-external form; it becomes authoritative only through the canonical immediate receipt for the chosen close-out class.
 
 If the classifier resolves `continue_same_invocation`, the immediate next user-visible message must be the transcript-visible `Cycle Opened` commentary receipt. Any intervening wrap-up, pseudo-stop summary, or `final` message is an illegal-exit signature rather than a softer form of continuation.
 If the classifier resolves `continue_same_invocation`, the immediate next user-visible message must be a `Cycle Opened` commentary receipt containing `receipt_id`, `prev_receipt_id`, `closeout_classification=continue_same_invocation`, `pause_reason=null`, `most_recently_closed_stage`, `next_current_stage`, `run_decision=continue`, `handoff_packet_id`, `revised_plan_version`, `reassessment_receipt_ref`, and `next_mandatory_dispatch`. A stage-close summary or `final` close-out cannot stand in for that receipt. It must then be followed by a `Dispatch Started` commentary receipt containing `receipt_id`, `prev_receipt_id`, `dispatch_started=next_mandatory_dispatch`, and `current_stage=next_current_stage`.
-If the classifier resolves `live_pause`, the immediate next and final user-visible message must be a transcript-visible `Pause Receipt` containing `receipt_id`, `prev_receipt_id`, `closeout_classification=live_pause`, `run_decision=continue`, `pause_reason`, the latest authoritative current-stage status or `newborn_cycle_current_stage=null`, `most_recently_closed_stage` when applicable, `resume_entry_state`, `resume_dispatchability`, any `post_close_invalidation`, `handoff_packet_id`, `revised_plan_version`, `reassessment_receipt_ref`, and `next_mandatory_dispatch`. The `Pause Receipt` must also carry reason-specific proof: `escalation_blocker`, `user_pause_request_ref`, `pending_decision_question` plus `approval_or_option_set`, `conflicting_path_set`, or `measured_cap` plus `current_consumption` plus `limit_source`, depending on `pause_reason`.
-If the classifier resolves `stop_goal_saturated|stop_escalation_halt`, the immediate next and final user-visible message must be a transcript-visible `Stop Receipt` containing `receipt_id`, `prev_receipt_id`, `closeout_classification`, `termination_posture`, `run_decision=stop`, `goal_reassessment_completed=true`, `most_recently_closed_stage`, the latest authoritative current-stage status, `required_for_success_remaining_count`, `required_for_success_stage_ids_or_hash`, `handoff_packet_id`, `revised_plan_version`, `reassessment_receipt_ref`, and the concrete stop basis. In every `Stop Receipt`, `closeout_classification` must equal `termination_posture`, and both must be one of `stop_goal_saturated|stop_escalation_halt`. `stop_goal_saturated` is legal only when `required_for_success_remaining_count=0`.
+If the classifier resolves `live_pause`, the immediate next and final user-visible message must be a transcript-visible `Pause Receipt` containing `receipt_id`, `prev_receipt_id`, `closeout_classification=live_pause`, `run_decision=pause`, `pause_reason`, the latest authoritative current-stage status or `newborn_cycle_current_stage=null`, `most_recently_closed_stage` when applicable, `resume_entry_state`, `resume_dispatchability`, any `post_close_invalidation`, `handoff_packet_id`, `revised_plan_version`, `reassessment_receipt_ref`, `next_mandatory_dispatch`, and either `stop_authorization_ref` or `authorization_waiver_basis`. The `Pause Receipt` must also carry reason-specific proof: `escalation_blocker`, `user_pause_request_ref`, `pending_decision_question` plus `approval_or_option_set`, `conflicting_path_set`, or `measured_cap` plus `current_consumption` plus `limit_source`, depending on `pause_reason`.
+If the classifier resolves `stop_goal_saturated|stop_escalation_halt`, the immediate next and final user-visible message must be a transcript-visible `Stop Receipt` containing `receipt_id`, `prev_receipt_id`, `closeout_classification`, `termination_posture`, `run_decision=stop`, `goal_reassessment_completed=true`, `most_recently_closed_stage`, the latest authoritative current-stage status, `required_for_success_remaining_count`, `required_for_success_stage_ids_or_hash`, `handoff_packet_id`, `revised_plan_version`, `reassessment_receipt_ref`, `stop_authorization_ref`, and the concrete stop basis. In every `Stop Receipt`, `closeout_classification` must equal `termination_posture`, and both must be one of `stop_goal_saturated|stop_escalation_halt`. `stop_goal_saturated` is legal only when `required_for_success_remaining_count=0`.
 If the loop ends through `stop_planning_deliverable`, the immediate next and final user-visible message must be a transcript-visible `Planning Complete Receipt` containing `receipt_id`, `closeout_classification=stop_planning_deliverable`, `run_intent=planning_only`, `terminal_handoff_kind=planning`, `terminal_state=integrate_plan`, the latest authoritative stage status, `handoff_packet_id`, and `revised_plan_version`. Planning-deliverable closure is a separate terminal planning path, not a `Stop Receipt` variant and not a terminal run stop posture.
 
 ## Plan Reconstruction
@@ -168,10 +195,12 @@ The point is not to paraphrase the source note. The point is to recover the real
 
 Every stage loop should preserve this structure:
 
+- bounded ideation before initial research, with later ideation reopened only
+  for remaining gaps or newly visible alternatives
 - one current stage at a time
 - bounded worker slices only where safe
 - direct evidence before closure
-- verification plus three fresh verify challengers
+- verification plus five fresh verify challengers
 - close by commit when applicable, otherwise by explicit rescope or escalate
 - use later goal reassessment and run decision for continue vs stop
 - fresh research before the next stage or next cycle
@@ -186,6 +215,7 @@ Goal-level reassessment is not only for full-plan exhaustion. It should run afte
 During goal-level reassessment:
 
 - re-open the original goal
+- revisit `ideas.md` only when it can expose a better remaining path
 - inspect the current codebase again
 - run fresh research for higher quality, better leverage, missing improvements, or structural refinement
 - if worthwhile improvement remains, issue the next revised plan and continue
@@ -193,6 +223,10 @@ During goal-level reassessment:
 For `run_intent=implementation_oriented`, a legal `continue` is not a default user-visible stop.
 If no explicit pause reason exists, the live invocation should open the next cycle immediately
 rather than returning control merely because one preparatory stage closed cleanly.
+
+Expected runtime, screenshot volume, log volume, or operator caution are not pause reasons.
+If the user already asked for an end-to-end `$loop`, asking `should I continue?` at a clean
+stage boundary is an illegal yield unless genuine external authority is required.
 
 If that next cycle is opened in the same live invocation, the agent should emit a transcript-visible `Cycle Opened` commentary receipt naming the most recently closed stage, the next current stage, and the next mandatory dispatch. If a legal pause is taken instead, that receipt is replaced by the required `Pause Receipt`; if the run stops, it is replaced by the required `Stop Receipt` or `Planning Complete Receipt`. `final` is therefore reserved for canonical pause and stop receipts only.
 Those receipts are the transcript-visible audit markers for every close-out classification: the correct immediate receipt must appear right after the termination classifier resolves, it must carry lineage binding back to the latest sealed handoff and revised-plan version, it must participate in a valid `receipt_id` / `prev_receipt_id` chain anchored by `Reassessment Pending`, and its absence, field mismatch, delayed emission, broken chaining, or contradiction against authoritative lineage should be treated as `phase-close-as-run-stop`, whose default recovery is `resume/reassess`.

@@ -83,7 +83,7 @@ When repo execution happens:
 
 - run the planned checks
 - collect direct evidence
-- run three fresh verify challengers
+- run five fresh verify challengers
 - close blocking findings before commit
 
 ### 8. Commit at the stage boundary

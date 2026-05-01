@@ -1,11 +1,19 @@
 # Contracts And Rules
 
+> Note:
+> The default `$loop` contract is the pragmatic resumable profile in `../SKILL.md`.
+> This document preserves stricter high-rigor rules for runtime design, packet validation, and receipt-heavy protocol work.
+> If the environment does not provide durable delegated state, persisted handoff should take precedence over same-invocation receipt choreography.
+> The default live Codex contract is `5 Codex` research, `5 Codex` plan challenge, local execution, fresh `5 Codex` verify, and `5 Codex` autonomous halt review.
+> Claude is opt-in evidence only and must not be invented or counted unless the user explicitly asked for Claude on that run.
+> References below to `exactly three` or `exact-three` describe a legacy kernel viewpoint subset and must not override the pragmatic default contract in `../SKILL.md`.
+
 ## Core Invariants
 
 - Keep the loop bounded by explicit stages, explicit next actions, and explicit quality gates.
 - Keep the run resumable across many bounded stage cycles.
 - Keep source intake content-first.
-- Keep research, planning, challenge, execution, and verification as distinct role lanes.
+- Keep ideation, research, planning, challenge, execution, and verification as distinct role lanes.
 - Keep evidence grounded in files, tests, logs, diffs, and direct source references.
 - Keep the repo contract visible whenever execution lands inside a repository.
 - Keep the main value in staged plan reconstruction and repeated improvement, not in decorative summarization.
@@ -17,9 +25,9 @@
 - Keep the latest sealed `handoff_packet` plus fresh preflight as the only legal resume authority.
 - Keep post-close invalidation on the same cycle until fresh `verify` clears it.
 
-## Supporting Contract Layers
+## Canonical Contract Layers
 
-Use this file for supporting operating rules and implementation detail. `SKILL.md` remains the only public operator contract; if wording differs, follow `SKILL.md`. Use the bundled kernel references when the question is about deeper lifecycle or packet shape:
+Use this file for the operating rules. Use the validated kernel docs when the question is about exact lifecycle or packet shape:
 
 - `kernel-spec-stage1-3-draft.md`
   Lifecycle control, handoff legality, claim recovery, post-close invalidation, and termination behavior. The filename is legacy, but it now carries the validated Stage 1-4 kernel.
@@ -32,14 +40,38 @@ Use this file for supporting operating rules and implementation detail. `SKILL.m
 
 ## Agent Model Rules
 
+- `$loop` / `$agent-loop` is standing authorization to use delegated
+  `spawn_agent` lanes when the host exposes that tool and delegation materially
+  helps the current stage. Do not pause to ask whether agents may be opened; a
+  separate approval gate exists only for authority outside the current runtime
+  contract, such as new paid third-party credentials or irreversible production
+  side effects.
+- Record that grant directly in the authoritative handoff as
+  `capability_mode=delegated_agents_authorized_by_loop_<tool-state>`. Tool
+  availability is a runtime state suffix, not a second permission checkpoint.
 - Before any delegated lane dispatch, resolve one concrete model pin from the local runtime config plus the current local model catalog.
 - If that resolution succeeds, every loop lane in the live invocation must use the same exact `resolved_model_slug` and `resolved_reasoning_effort`.
-- In many current Codex runtimes, the resolved hard pin may be `gpt-5.4` with `xhigh`, but the local runtime config and catalog remain authoritative unless the user explicitly overrides them before dispatch.
+- In the current local Codex environment, the resolved hard pin is `gpt-5.5` with `xhigh` unless the runtime config/catalog changes before dispatch.
 - `strongest available` is a single pre-dispatch resolution step, not a per-lane heuristic.
 - Every delegated loop lane must pass that pin explicitly on the actual `spawn_agent` tool call through `model=<resolved_model_slug>` and `reasoning_effort=<resolved_reasoning_effort>`.
 - Omitting either tool-call field is illegal because inherited or default selection may silently downshift.
+- Every halt/completion proof artifact must record `spawn_model_binding=explicit_tool_args`, `spawn_tool_args_model=<resolved_model_slug>`, `spawn_tool_args_reasoning_effort=<resolved_reasoning_effort>`, and `spawn_tool_call_ref=<dispatch evidence>`; artifacts that only record claimed model policy without the dispatch binding are inadmissible.
 - Never downshift any loop lane for latency, cost, convenience, hidden defaults, or per-lane heuristics.
 - Treat any delegated output produced without the resolved hard pin, or with a weaker model/effort pair, as inadmissible and rerun that lane.
+- Advisory external Claude lanes are allowed during research phases and the autonomous-halt `stop_authorization` gate only when the current run records explicit user/operator opt-in for external Claude use; `claude` CLI availability alone is never authorization. They do not count as delegated loop lanes under the Stage 6 packet contract.
+- When advisory Claude lanes are explicitly opted in, dispatch them through `scripts/run-claude-research.mjs`, keep them to one fresh session per viewpoint, and pin them separately to `CLAUDE_CODE_HIGHEST_MODEL` or `opus` with `max` effort. Permission bypass flags require a separate explicit opt-in through `--dangerously-bypass-permissions` or `AGENT_LOOP_CLAUDE_BYPASS_PERMISSIONS=1`.
+- Advisory Claude outputs are evidence-only inputs for the research merge and autonomous-halt gate; they never replace the five authoritative Codex research lanes, they cannot authorize halt on their own, and they never carry challenge, verify, or worker authority.
+- Before every delegated dispatch, perform a tool-call preflight against actual runtime constraints.
+- For `spawn_agent`, respect mutually exclusive fields such as `message` vs `items` and any runtime rule that rejects explicit model/effort overrides when full-history fork is used.
+- A rejected delegated tool call is an orchestration failure, not a legal pause or stop reason.
+- Default recovery for orchestration failure is immediate corrected redispatch or legal local fallback in the same live invocation.
+- Optional advisory-lane failure must be recorded as degradation evidence and may not freeze the main bounded stage.
+- Same-round halt/completion challenge lanes evaluate the synchronized current
+  run snapshot, not whether the controller has already written the proof bundle
+  that will be synthesized from those lane outputs. Absence of same-round
+  canonical proof artifacts before synthesis is not a valid deny reason by
+  itself. Nor is the absence of the current round's verdict set in the run
+  directory, because that verdict set is being generated by the live challenge.
 
 ## Source Intake Rules
 
@@ -58,28 +90,127 @@ Required rules:
 - if the source is a readable local file, read it directly
 - if the source is pasted content, preserve its actual structure
 - if both goal and body exist, keep the first line as the working goal candidate
+- if a later operator message explicitly invokes `$loop` / `$agent-loop` with a
+  materially different working goal, treat that as a new run-selection event
+  rather than silently extending the older run
+- older-run artifacts may inform the new run, but older-run completion or stop
+  proof may not terminate the newer goal
 - do not reinterpret a local path as a product runtime feature unless explicitly asked
-- source form never changes lifecycle: a plan document, roadmap, authority note, or implementation checklist still enters the same initial `research -> planning -> challenge` path
+- source form never changes lifecycle: a plan document, roadmap, authority note,
+  or implementation checklist still enters the same initial
+  `ideation -> research -> planning -> challenge` path
 - prewritten plans are source evidence, not executable authority; only the loop-produced authoritative `revised_plan` may drive execution
 - derive request intent from the explicit user ask, not from source-document wording alone
 - if the source contains `Run Intent`, delivery mode, or similar control text, treat it as advisory source evidence rather than authority
+
+## Ideation / Discovery Rules
+
+Before Research, run a bounded divergent pass:
+
+- collect candidate approaches, outside methods, prior art, research leads,
+  product patterns, alternative architectures, UX patterns, and risky
+  hypotheses that the repo-local view may miss
+- first classify the Ideation need: known next action or deterministic local
+  work => `0` with `ideation_not_material`; material ambiguity => `3`;
+  high-impact ambiguity where missed alternatives are plausibly costly => `5`.
+  The default three Ideation viewpoints are `repo-local alternatives`, `outside
+  patterns`, and `risk hypotheses`; run them controller-internally unless
+  delegation materially helps. Reserve "delegated lanes" for `spawn_agent`
+  dispatches
+- write candidates to `ideas.md`, not `research.md`
+- use [ideas-template.md](ideas-template.md): every candidate needs `idea_id`,
+  `cycle_id`, `source_requirement_ref`, provenance/source-quality fields,
+  `validation_required`, `currency_risk`, `blocking`, and
+  `research_status=pending|validated|rejected|stale`
+- treat all candidates as unverified; `ideas.md` is not evidence, not scope
+  authority, and not permission to plan or edit
+- broad third-party sources, memory, examples, and prior art are allowed as
+  leads only; source quality must be labeled, and any candidate that affects
+  planning must later be validated by Research through repo inspection,
+  official docs, primary sources, or direct runtime evidence
+- record `ideation_not_material` and continue to Research for deterministic
+  local work: named failing tests, specific files, regressions, typos,
+  localized UI copy fixes, lint/type errors, deterministic stack traces,
+  user-prescribed implementations, resumed runs with a concrete next action,
+  and emergency or surgical fixes
+- keep Ideation finite: one pass, no recursive source chasing, and a total
+  merged-output cap of 5 minutes, 5 candidates, and 3 external sources;
+  reassessment Ideation is capped at 3 minutes, 3 candidates, and 2 external
+  sources tied to the remaining gap
+- pending ideas are non-blocking by default, must not expand
+  `remaining_required_stages`, and may be revisited only when their
+  `next_review_trigger` matches an active gap
+- on reassessment cycles, revisit `ideas.md` only for remaining gaps,
+  higher-leverage alternatives, or newly visible constraints; do not reopen
+  broad brainstorming by default when the next action is already determined
 
 ## Research Rules
 
 Before the first plan lock:
 
-- inspect the current target state
+- inspect the current target state, including source authority, existing run
+  artifacts when resuming, relevant files/modules, tests/configs, dirty-worktree
+  constraints, runtime/tool availability, and external systems touched by the
+  goal
 - run deep research for current behavior, constraints, alternatives, and leverage
-- run exactly three viewpoint-separated research agents in parallel:
+- record `official_docs_decision=consulted` with refs when
+  model/runtime/tool/MCP/Codex/Claude behavior affects the plan, or
+  `official_docs_decision=not_material` with a one-sentence rationale when it
+  does not
+- record
+  `capability_mode=delegated_agents_authorized_by_loop_<tool_available|tool_unavailable|tool_state_unknown>`
+  before dispatch; delegated-agent unavailability is a runtime constraint, not
+  a missing permission grant
+- use local Research only and record `delegated_research_not_material` when the
+  goal is deterministic, file-local, or already constrained by a concrete next
+  action
+- when delegated Research is material because uncertainty, cross-system
+  behavior, external methods, or plan shape could change, run exactly five
+  viewpoint-separated research agents in parallel:
   - `architecture_dependency`
   - `failure_verification`
   - `goal_efficiency`
-- planning may consume fresh research only after those three lane outputs are merged into one research synthesis with concrete refs for all three viewpoints
+  - `requirement_alignment`
+  - `implementation_quality`
+- require each Codex research lane artifact to include the resolved model slug,
+  reasoning effort, model-resolution basis, explicit spawn args, and dispatch
+  receipt; omitted/default/inherited model selection is inadmissible
+- if explicit external-Claude opt-in is recorded for the current run and `claude`
+  CLI is available, optionally run the same viewpoints in parallel through
+  `scripts/run-claude-research.mjs` as advisory external evidence
+- planning may consume fresh research only after either
+  `delegated_research_not_material` is recorded with rationale or those five
+  lane outputs are merged into one research synthesis with concrete refs for all
+  five viewpoints
+- advisory Claude output, when present, must be merged by the main CLI before planning consumes the research result
+- write research synthesis as decision-relevant `evidence -> plan impact`,
+  including negative evidence that rules out an approach or proves a constraint
+  does not apply; raw command output and dispatch receipts stay in
+  evidence/receipt files and are cited rather than pasted
+- consume `ideas.md` as a validation queue: relevant candidates must become
+  `validated`, `rejected`, or `stale` through cited Research evidence before
+  they shape `revised-plan.md`; irrelevant candidates may remain non-blocking
+  `pending`
+- every non-`pending` idea transition must include `research_ref`,
+  `evidence_ref`, `decision_date`, and `decision_summary`
+- only Research-validated candidates may add or alter plan actions; rejected
+  candidates may affect Plan only as ruled-out constraints or non-actions
+- keep source authority separate from inspected-state constraints; current repo
+  findings may constrain execution but may not silently redefine the user's goal
+- classify open questions as `blocking`, `plan-shaping but bounded`, or
+  `non-blocking`; planning may lock only with zero `blocking` questions
+- research is sufficient only when no known unresolved fact would change the
+  next bounded plan action or invalidate the selected approach, and that claim
+  is backed by cited inspection, official-doc/runtime evidence, delegated-lane
+  receipts, or explicit blocker records
 
 After any cycle closes through `commit|rescope|escalate`:
 
 - run a fresh research pass
-- run the same exact three viewpoint-separated research lanes again
+- run the same exact five viewpoint-separated research lanes again
+- if explicit external-Claude opt-in is recorded for the current run and
+  `claude` CLI is available, rerun the advisory Claude lanes on the same
+  viewpoints before sealing reassessment synthesis
 - search for a better next ordering
 - search for higher-quality implementation paths
 - search for newly visible debt or missing work related to the same goal
@@ -87,10 +218,36 @@ After any cycle closes through `commit|rescope|escalate`:
 During goal-level reassessment, including when the current plan appears exhausted:
 
 - run a goal-level research sweep
-- run the same exact three viewpoint-separated research lanes again
+- run the same exact five viewpoint-separated research lanes again
+- if explicit external-Claude opt-in is recorded for the current run and
+  `claude` CLI is available, rerun the advisory Claude lanes on the same
+  viewpoints before the goal-level continue/stop merge
 - compare the original objective with the current codebase state
 - continue into a new plan cycle if meaningful improvement remains
 - for implementation-oriented runs, stop only later through `goal_reassessment -> run_decision`, either because research concludes that no meaningful improvement remains or because an escalated lineage ends in `stop_escalation_halt`; planning-deliverable-only runs remain the separate terminal `planning` closure path
+
+## Stop Authorization Rules
+
+Before any autonomous user-visible `live_pause` or terminal stop:
+
+- run a distinct `stop_authorization` gate after `goal_reassessment -> run_decision`
+- use the same capped five-viewpoint set:
+  - `architecture_dependency`
+  - `failure_verification`
+  - `goal_efficiency`
+  - `requirement_alignment`
+  - `implementation_quality`
+- dispatch exactly one fresh Codex agent per viewpoint; duplicate viewpoints,
+  missing viewpoints, or generic all-purpose challenge prompts do not count as
+  the final five-agent gate
+- dispatch the full `5 Codex` halt gate even if the earlier research or challenge phases stayed on the legacy exact-three subset
+- add matching `5 Claude` lanes only when Claude was explicitly requested and actually executed for that run
+- require each lane to return an explicit halt verdict of `allow` or `deny`
+- treat any missing lane, failed lane, parse failure, or ambiguous wording as `deny`
+- if even one lane denies, the close-out classifier must resolve to `continue_same_invocation`
+- if the full `5 Codex` gate cannot be produced, autonomous halt is illegal; continue the loop unless direct human authority already requires a pause
+- user-requested pause/stop, explicit human preference waits, and dirty-change conflicts that require operator resolution may bypass this gate because the halt authority is external rather than autonomous
+- the orchestrator must record the gate outcome in authoritative artifacts before any autonomous halt receipt is emitted
 
 ## Plan Reconstruction Rules
 
@@ -121,11 +278,13 @@ Minimum sections for reconstructed revised plans:
 
 ## Plan Challenge Contract
 
-Every plan challenge phase must run exactly three challengers in parallel:
+Every plan challenge phase must run exactly five challengers in parallel:
 
 - `architecture_dependency`
 - `failure_verification`
 - `goal_efficiency`
+- `requirement_alignment`
+- `implementation_quality`
 
 Those challengers must all use the same resolved hard pin for the live invocation.
 
@@ -157,6 +316,8 @@ Execution should then:
 - for `run_intent=implementation_oriented`, a legal `continue` is a keep-going directive for the live invocation unless an explicit pause reason is recorded
 - `stage_closed` is cycle-local and `run_stopped` is run-level; a non-terminal stage close never grants stop authority by itself
 - only the main run owner / orchestrator may classify live-invocation termination, authorize `final`, or convert a closed stage into a legal pause or terminal stop posture
+- a turn-ending assistant message, progress recap, artifact refresh, or verification summary is not a legal lifecycle transition by itself
+- if the host runtime requires a final message at the end of a turn while `run_decision=continue`, that message must remain a continuation-status receipt rather than a closure, handoff, or pseudo-stop narrative
 - after any non-terminal `commit|rescope|escalate`, the lifecycle must enter `post_close_reassessment_pending` before any legal yield or next-cycle-open decision
 - `post_close_reassessment_pending` is not itself a legal yield, pause, or terminal posture; it must clear through reassessment research and `goal_reassessment -> run_decision` before any valid close-out classification exists
 - before ending the live invocation, the orchestrator must perform a stop checklist:
@@ -164,36 +325,45 @@ Execution should then:
   - identify whether any incomplete `required_for_success` stage remains
   - identify whether the loop has terminal planning-deliverable closure, a terminal `run_decision` stop posture, or only an explicit live-invocation pause reason
   - run the termination classifier only after `goal_reassessment -> run_decision`; stage-close language, handoff sealing, or a completed commit cannot pre-authorize it
+  - before any autonomous `live_pause|stop_goal_saturated|stop_escalation_halt`, complete the full `stop_authorization` gate or record a valid external-authority waiver basis
   - emit an explicit `closeout_classification` chosen from `continue_same_invocation | live_pause | stop_planning_deliverable | stop_goal_saturated | stop_escalation_halt`
   - any `closeout_classification` emitted while `post_close_reassessment_pending` is still active is invalid
   - if classification is missing or ambiguous, default to `continue_same_invocation`
+  - if the `stop_authorization` gate is missing, incomplete, failed, ambiguous, or denied, autonomous halt is illegal and `continue_same_invocation` is mandatory
   - `stop_planning_deliverable` is legal only for `run_intent=planning_only`
   - if `run_decision=continue` and no explicit pause reason exists, continuing the loop is mandatory
+  - a courtesy question such as `should I continue?` after `run_decision=continue` is an illegal yield unless the question is required by a real external-authority pause reason
   - `stage boundary`, `phase closed`, `handoff sealed`, or similar wording is never a legal stop or pause reason
   - immediately after entering `post_close_reassessment_pending`, emit a transcript-visible `Reassessment Pending` commentary receipt
   - that `Reassessment Pending` receipt must include `receipt_id`, `stage_close_event_id`, `reassessment_state=post_close_reassessment_pending`, `most_recently_closed_stage`, `handoff_packet_id`, `revised_plan_version`, and `next_mandatory_dispatch=reassessment_research`
   - the termination classifier has no hidden transcript-external form; its chosen `closeout_classification` becomes authoritative only through the canonical immediate receipt for that classification
-  - if `run_decision=continue` and no explicit pause reason exists, `final` is illegal and the immediate next user-visible message must be a `Cycle Opened` commentary receipt
-  - that `Cycle Opened` receipt must include `receipt_id`, `prev_receipt_id`, `closeout_classification=continue_same_invocation`, `pause_reason=null`, `most_recently_closed_stage`, `next_current_stage`, `run_decision=continue`, `handoff_packet_id`, `revised_plan_version`, `reassessment_receipt_ref`, and `next_mandatory_dispatch`
-  - after `Cycle Opened`, emit a transcript-visible `Dispatch Started` commentary receipt before any later yield or stop claim
-  - that `Dispatch Started` receipt must include `receipt_id`, `prev_receipt_id`, `dispatch_started=next_mandatory_dispatch`, and `current_stage=next_current_stage`
-  - if the loop yields through `live_pause`, the immediate next and final user-visible message must be a transcript-visible `Pause Receipt`
-  - that `Pause Receipt` must include `receipt_id`, `prev_receipt_id`, `closeout_classification=live_pause`, `run_decision=continue`, `pause_reason`, the latest authoritative current-stage status or `newborn_cycle_current_stage=null`, `most_recently_closed_stage` when applicable, `resume_entry_state`, `resume_dispatchability`, any `post_close_invalidation`, `handoff_packet_id`, `revised_plan_version`, `reassessment_receipt_ref`, and `next_mandatory_dispatch`
+- if `run_decision=continue` and no explicit pause reason exists, `final` is illegal and the immediate next user-visible message must be a `Cycle Opened` commentary receipt
+- that `Cycle Opened` receipt must include `receipt_id`, `prev_receipt_id`, `closeout_classification=continue_same_invocation`, `pause_reason=null`, `most_recently_closed_stage`, `next_current_stage`, `run_decision=continue`, `handoff_packet_id`, `revised_plan_version`, `reassessment_receipt_ref`, and `next_mandatory_dispatch`
+- after `Cycle Opened`, emit a transcript-visible `Dispatch Started` commentary receipt before any later yield or stop claim
+- that `Dispatch Started` receipt must include `receipt_id`, `prev_receipt_id`, `dispatch_started=next_mandatory_dispatch`, and `current_stage=next_current_stage`
+- if the host interface still forces a turn-ending final while `closeout_classification=continue_same_invocation`, that final is not a stop or pause receipt and must restate `current_or_next_stage`, `loop_state`, and `next_mandatory_dispatch` explicitly
+- any turn-ending final that only summarizes completed work or verification while omitting the live continuation fields above is an orchestration defect and must be corrected in the next cycle before new closure language appears
+- if the loop yields through `live_pause`, the immediate next and final user-visible message must be a transcript-visible `Pause Receipt`
+  - that `Pause Receipt` must include `receipt_id`, `prev_receipt_id`, `closeout_classification=live_pause`, `run_decision=pause`, `pause_reason`, the latest authoritative current-stage status or `newborn_cycle_current_stage=null`, `most_recently_closed_stage` when applicable, `resume_entry_state`, `resume_dispatchability`, any `post_close_invalidation`, `handoff_packet_id`, `revised_plan_version`, `reassessment_receipt_ref`, `next_mandatory_dispatch`, and either `stop_authorization_ref` or `authorization_waiver_basis`
   - if `pause_reason=unresolved escalate`, the `Pause Receipt` must also include `escalation_blocker`
   - if `pause_reason=user-requested pause`, the `Pause Receipt` must also include `user_pause_request_ref`
   - if `pause_reason=external approval or user decision required`, the `Pause Receipt` must also include `pending_decision_question` and `approval_or_option_set`
   - if `pause_reason=conflicting dirty changes`, the `Pause Receipt` must also include `conflicting_path_set`
   - if `pause_reason=recorded time or resource ceiling`, the `Pause Receipt` must also include `measured_cap`, `current_consumption`, and `limit_source`
   - if the loop ends through terminal run stop, the immediate next and final user-visible message must be a transcript-visible `Stop Receipt`
-  - that `Stop Receipt` must include `receipt_id`, `prev_receipt_id`, `closeout_classification`, `termination_posture`, `run_decision=stop`, `goal_reassessment_completed=true`, `most_recently_closed_stage`, the latest authoritative current-stage status, `required_for_success_remaining_count`, `required_for_success_stage_ids_or_hash`, `handoff_packet_id`, `revised_plan_version`, `reassessment_receipt_ref`, and the concrete stop basis
+  - that `Stop Receipt` must include `receipt_id`, `prev_receipt_id`, `closeout_classification`, `termination_posture`, `run_decision=stop`, `goal_reassessment_completed=true`, `most_recently_closed_stage`, the latest authoritative current-stage status, `required_for_success_remaining_count`, `required_for_success_stage_ids_or_hash`, `handoff_packet_id`, `revised_plan_version`, `reassessment_receipt_ref`, `stop_authorization_ref`, and the concrete stop basis
   - in every `Stop Receipt`, `closeout_classification` must equal `termination_posture`, and both must be one of `stop_goal_saturated|stop_escalation_halt`
   - if `termination_posture=stop_goal_saturated`, `required_for_success_remaining_count` must equal `0`
   - if the loop ends through terminal planning-deliverable closure, the immediate next and final user-visible message must be a transcript-visible `Planning Complete Receipt`
   - that `Planning Complete Receipt` must include `receipt_id`, `closeout_classification=stop_planning_deliverable`, `run_intent=planning_only`, `terminal_handoff_kind=planning`, `terminal_state=integrate_plan`, the latest authoritative stage status, `handoff_packet_id`, and `revised_plan_version`
   - a stage-close summary, handoff summary, or any other wrap-up message cannot substitute for any canonical receipt
-  - if the loop is only pausing, the latest sealed `handoff_packet` must already encode the authoritative resume path; if `run_decision=continue`, that means the newborn-cycle `research` handoff is already sealed before control returns to the user
+  - if the loop is only pausing, the latest sealed `handoff_packet` must already encode the authoritative resume path; if `run_decision=pause`, that means the pause-ready resume path is already sealed before control returns to the user
   - if the pause reason is recorded time or resource ceiling, the measured cap must be named concretely and must already be backed by the latest authoritative `decision_ledger` lineage; vague ceiling language is illegal
-  - if the agent cannot name a legal stop posture or legal pause reason, user-visible termination is illegal
+- if the agent cannot name a legal stop posture or legal pause reason, user-visible termination is illegal
+- delegated dispatch failure, advisory lane failure, or tool-call validation failure is not itself a legal pause reason
+- if an orchestration defect occurs and the underlying stage is still actionable, `continue_same_invocation` remains mandatory after recording the degradation or retry basis
+- the immediate response to a recoverable orchestration defect is corrected redispatch or local fallback, not conversational stall
+- a user-visible wrap-up that implies completion, handoff, or passive waiting before the stop checklist clears is itself an orchestration defect and must be corrected in the next cycle
 
 Terminal end categories are:
 
@@ -214,10 +384,18 @@ Live-invocation pause reasons are limited to:
 - conflicting dirty changes
 - recorded time or resource ceiling
 
+Non-reasons that must not be upgraded into a pause:
+
+- expected command/runtime length
+- expected screenshot/log/artifact volume
+- operator caution after a clean non-terminal stage close
+- asking whether to continue work the user already requested end-to-end
+
 Pause legality rules:
 
 - a pause reason never changes `termination_posture`; it only explains why the live invocation yielded while the latest sealed handoff remained authoritative
 - before yielding, the orchestrator must preserve the latest authoritative `Current Stage` truthfully; it may not mark a stage closed unless the cycle actually closed through `commit|rescope|escalate`
+- when `run_decision=continue` and no legal pause reason exists, the orchestrator must emit commentary progress and dispatch the next mandatory action in the same invocation
 - user-visible close-out for any pause must identify:
   - whether the latest authoritative current stage is closed or still open; if the latest handoff is a newborn cycle with no current stage yet, say that explicitly and name the most recently closed stage
   - the latest sealed `resume_entry_state`
@@ -238,14 +416,15 @@ Illegal exit signatures:
 - `run_decision=continue` and no pause reason exists, yet the agent uses `final`
 - a non-terminal stage close is presented as sufficient reason to stop or yield
 - any worker, challenger, or stage-integrator output is treated as if it could authorize `final`, a legal pause, or a terminal run stop without the orchestrator's post-reassessment classifier
+- an autonomous `live_pause` or terminal stop is emitted without a full `5 Codex` explicit-allow `stop_authorization` result or a valid external-authority waiver basis
 - `closeout_classification` is missing, ambiguous, or uses any value outside the canonical set
 - `run_decision=continue` yields without the immediate transcript-visible `Cycle Opened` commentary receipt or, for legal pauses, without the required pause payload
 - `Cycle Opened` is the terminal message of the invocation without a later `Dispatch Started` receipt
 - the `Cycle Opened` receipt is missing any required field: `receipt_id`, `prev_receipt_id`, `closeout_classification=continue_same_invocation`, `pause_reason=null`, `most_recently_closed_stage`, `next_current_stage`, `run_decision=continue`, `handoff_packet_id`, `revised_plan_version`, `reassessment_receipt_ref`, or `next_mandatory_dispatch`
 - a `Dispatch Started` receipt is missing any required field: `receipt_id`, `prev_receipt_id`, `dispatch_started=next_mandatory_dispatch`, or `current_stage=next_current_stage`
-- a `Pause Receipt` is missing any required field: `receipt_id`, `prev_receipt_id`, `closeout_classification=live_pause`, `run_decision=continue`, `pause_reason`, authoritative stage status or newborn-cycle marker, `resume_entry_state`, `resume_dispatchability`, `post_close_invalidation`, `handoff_packet_id`, `revised_plan_version`, `reassessment_receipt_ref`, or `next_mandatory_dispatch`
+- a `Pause Receipt` is missing any required field: `receipt_id`, `prev_receipt_id`, `closeout_classification=live_pause`, `run_decision=pause`, `pause_reason`, authoritative stage status or newborn-cycle marker, `resume_entry_state`, `resume_dispatchability`, `post_close_invalidation`, `handoff_packet_id`, `revised_plan_version`, `reassessment_receipt_ref`, `next_mandatory_dispatch`, or both `stop_authorization_ref` and `authorization_waiver_basis`
 - a `Pause Receipt` is missing required reason-specific evidence for its chosen `pause_reason`
-- a `Stop Receipt` is missing any required field: `receipt_id`, `prev_receipt_id`, `closeout_classification`, `termination_posture`, `run_decision=stop`, `goal_reassessment_completed=true`, `most_recently_closed_stage`, authoritative stage status, `required_for_success_remaining_count`, `required_for_success_stage_ids_or_hash`, `handoff_packet_id`, `revised_plan_version`, `reassessment_receipt_ref`, or concrete stop basis
+- a `Stop Receipt` is missing any required field: `receipt_id`, `prev_receipt_id`, `closeout_classification`, `termination_posture`, `run_decision=stop`, `goal_reassessment_completed=true`, `most_recently_closed_stage`, authoritative stage status, `required_for_success_remaining_count`, `required_for_success_stage_ids_or_hash`, `handoff_packet_id`, `revised_plan_version`, `reassessment_receipt_ref`, `stop_authorization_ref`, or concrete stop basis
 - a `Stop Receipt` has mismatched `closeout_classification` and `termination_posture`, or either value falls outside `stop_goal_saturated|stop_escalation_halt`
 - a `Stop Receipt` claims `termination_posture=stop_goal_saturated` while `required_for_success_remaining_count` is nonzero
 - any canonical receipt omits lineage binding or contradicts the latest sealed `handoff_packet` / authoritative `revised_plan`
@@ -260,10 +439,12 @@ Before a stage may close:
 
 - run the defined checks
 - collect direct evidence
-- run exactly three fresh verify challengers in parallel:
+- run exactly five fresh verify challengers in parallel:
   - `architecture_dependency`
   - `failure_verification`
   - `goal_efficiency`
+  - `requirement_alignment`
+  - `implementation_quality`
 
 Those verify challengers must all use the same resolved hard pin for the live invocation.
 

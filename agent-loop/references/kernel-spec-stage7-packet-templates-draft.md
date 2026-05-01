@@ -1,18 +1,20 @@
 # Stage 7 Packet Templates Draft
 
-This draft is a supporting design appendix for the public skill. `SKILL.md` remains the only public operator contract.
-
 These references are non-authoritative maintainer appendices. They may explain lower-level lifecycle or packet detail, but they do not add, widen, or override the public operator contract in `SKILL.md`.
 
-This draft turns the Stage 6 packet contract into concrete reusable packet templates.
+> Note:
+> In normal `$loop` use, the default delegated Codex mix is 5 lanes; optional Claude evidence is capped to those same 5 viewpoints, and high-difficulty work stays capped at 5 lanes.
+> These packet templates use the current 5-viewpoint execution mix.
+
+This draft turns the validated Stage 6 packet contract into concrete reusable packet templates.
 
 It does not yet rewrite `SKILL.md` or repo-local agent assets.
 
-It assumes these files remain the current supporting references:
+It assumes these files are already authoritative:
 
-- [kernel-spec-stage1-3-draft.md](./kernel-spec-stage1-3-draft.md)
-- [kernel-spec-stage5-oracle-draft.md](./kernel-spec-stage5-oracle-draft.md)
-- [kernel-spec-stage6-packets-draft.md](./kernel-spec-stage6-packets-draft.md)
+- [kernel-spec-stage1-3-draft.md](kernel-spec-stage1-3-draft.md)
+- [kernel-spec-stage5-oracle-draft.md](kernel-spec-stage5-oracle-draft.md)
+- [kernel-spec-stage6-packets-draft.md](kernel-spec-stage6-packets-draft.md)
 
 ## Stage 7 Goal
 
@@ -50,6 +52,7 @@ packet_envelope:
   resolved_model_slug: <resolved_model_slug>
   resolved_reasoning_effort: <resolved_reasoning_effort>
   model_resolution_basis_ref: <model_resolution_basis_ref>
+  spawn_model_binding: explicit_tool_args
   dispatch_mode: <bootstrap|resume>
   run_id: <run_id>
   cycle_id: <cycle_id>
@@ -63,7 +66,7 @@ packet_envelope:
   dispatch_basis: <bootstrap_basis|resume_basis|omit_when_not_dispatch_opening>
 ```
 
-A filled packet is dispatch-legal only when the delegated `spawn_agent` call repeats `model=<resolved_model_slug>` and `reasoning_effort=<resolved_reasoning_effort>` explicitly. Relying on inherited or default selection is illegal.
+A filled packet is dispatch-legal only when the delegated `spawn_agent` call repeats `model=<resolved_model_slug>` and `reasoning_effort=<resolved_reasoning_effort>` explicitly. Relying on inherited or default selection is illegal, and halt/completion proof must later record the matching `spawn_tool_args_model` and `spawn_tool_args_reasoning_effort` values.
 
 ## Research Packet Template
 
@@ -75,7 +78,7 @@ authoritative_inputs:
   handoff_or_bootstrap_ref: <handoff_ref|bootstrap_ref>
   working_goal_ref: <working_goal_ref>
   source_packet_ref: <source_packet_ref>
-  research_viewpoint: <architecture_dependency|failure_verification|goal_efficiency>
+  research_viewpoint: <architecture_dependency|failure_verification|goal_efficiency|requirement_alignment|implementation_quality>
   revised_plan_ref: <plan_snapshot_ref|none_yet>
   stage_refs: <stage_refs|none_yet>
   decision_ledger_ref: <decision_ledger_ref>
@@ -145,13 +148,14 @@ completion_gate:
 
 Research phase consolidation rule:
 
-- exactly three delegated `research_packet` lanes must run per research phase, one per
-  `architecture_dependency`, `failure_verification`, and `goal_efficiency`
+- exactly five delegated `research_packet` lanes must run per research phase, one per
+  `architecture_dependency`, `failure_verification`, `goal_efficiency`,
+  `requirement_alignment`, and `implementation_quality`
 - before any `planning_packet` or run-level stop/continue decision may consume fresh research, the
   main CLI must assemble a merged `research_synthesis_candidate` with:
   - `synthesis_mode=merged`
-  - `research_viewpoint_set={architecture_dependency,failure_verification,goal_efficiency}`
-  - concrete `lane_candidate_refs` for all three delegated lane outputs
+  - `research_viewpoint_set={architecture_dependency,failure_verification,goal_efficiency,requirement_alignment,implementation_quality}`
+  - concrete `lane_candidate_refs` for all five delegated lane outputs
 
 ## Planning Packet Template
 
@@ -217,7 +221,7 @@ completion_gate:
   - run_intent is derived from `request_intent_ref`, not copied from source text alone
   - bootstrap planning uses concrete `current_cycle_research_candidate_ref`
   - at least one of `current_cycle_research_candidate_ref` or `authoritative_research_ref` is concrete
-  - any consumed research artifact exposes `research_viewpoint_set={architecture_dependency,failure_verification,goal_efficiency}`
+  - any consumed research artifact exposes `research_viewpoint_set={architecture_dependency,failure_verification,goal_efficiency,requirement_alignment,implementation_quality}`
   - every dispatchable_slice_spec follows the shared `dispatchable_slice_spec_template`
 ```
 
@@ -242,7 +246,7 @@ authoritative_inputs:
   handoff_or_bootstrap_ref: <handoff_ref|bootstrap_ref>
   phase: <planning_phase|verify_phase>
   challenge_review_mode: <plan_review|verify_current_pass|post_close_revalidation|cold_start_revalidation>
-  viewpoint: <architecture_dependency|failure_verification|goal_efficiency>
+  viewpoint: <architecture_dependency|failure_verification|goal_efficiency|requirement_alignment|implementation_quality>
   review_target_ref: <revised_plan_candidate_ref|verification_candidate_ref|evidence_packet_ref>
   active_plan_snapshot_id_ref: <plan_snapshot_id_ref|none_yet>
   active_target_fingerprint_ref: <target_fingerprint_ref>
@@ -469,8 +473,8 @@ seal_point_bundle_rules:
       - sealed_successor_handoff_with_full_schema
 completion_gate:
   - success_bundle is valid for exactly one seal_point
-  - when a `research_synthesis_candidate_ref` is consumed, `candidate_bundle_manifest.research_viewpoint_set` contains exactly `architecture_dependency`, `failure_verification`, and `goal_efficiency`
-  - when `seal_point=integrate_plan|integrate_verify`, `candidate_bundle_manifest.challenge_viewpoint_set` contains exactly `architecture_dependency`, `failure_verification`, and `goal_efficiency`
+  - when a `research_synthesis_candidate_ref` is consumed, `candidate_bundle_manifest.research_viewpoint_set` contains exactly `architecture_dependency`, `failure_verification`, `goal_efficiency`, `requirement_alignment`, and `implementation_quality`
+  - when `seal_point=integrate_plan|integrate_verify`, `candidate_bundle_manifest.challenge_viewpoint_set` contains exactly `architecture_dependency`, `failure_verification`, `goal_efficiency`, `requirement_alignment`, and `implementation_quality`
   - when `seal_point=integrate_verify`, exactly one legal subcase holds:
     - current-pass subcase: `verification_candidate_ref` is concrete, every consumed challenge result is `phase=verify_phase` with `challenge_review_mode=verify_current_pass` and `review_target_ref=verification_candidate_ref`, and the authoritative evidence packet in `success_bundle` is derived from `verification_candidate_ref` with matching `plan_snapshot_id`, `target_fingerprint`, and `target_refs`
     - revalidation subcase: `active_evidence_packet_ref` is concrete, every consumed challenge result is `phase=verify_phase` with `challenge_review_mode=post_close_revalidation|cold_start_revalidation` and `review_target_ref=active_evidence_packet_ref`, and the authoritative evidence packet in `success_bundle` preserves that revalidation target

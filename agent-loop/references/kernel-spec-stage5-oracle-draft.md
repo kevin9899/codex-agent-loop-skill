@@ -1,16 +1,18 @@
 # Stage 5 Oracle Draft
 
-This draft is a supporting design appendix for the public skill. `SKILL.md` remains the only public operator contract.
-
 These references are non-authoritative maintainer appendices. They may explain lower-level lifecycle or packet detail, but they do not add, widen, or override the public operator contract in `SKILL.md`.
+
+> Note:
+> In normal `$loop` use, the default delegated Codex mix is 5 lanes; optional Claude evidence is capped to those same 5 viewpoints, and high-difficulty work stays capped at 5 lanes.
+> References below to `exactly three` or `exact-three` describe a legacy kernel viewpoint subset, not the full default execution mix.
 
 This draft turns the Stage 1-4 kernel into falsifiable dry-run oracles.
 
 It does not finalize worker packets, challenger packets, verifier packets, or public skill reflection.
 
-It assumes [kernel-spec-stage1-3-draft.md](./kernel-spec-stage1-3-draft.md) is the current kernel reference for lifecycle, handoff, evidence, and worker ownership behavior.
+It assumes [kernel-spec-stage1-3-draft.md](kernel-spec-stage1-3-draft.md) is the source-of-truth kernel for lifecycle, handoff, evidence, and worker ownership behavior.
 
-If Stage 5 passes, the next downstream packet-contract work lives in [kernel-spec-stage6-packets-draft.md](./kernel-spec-stage6-packets-draft.md).
+If Stage 5 passes, the next downstream packet-contract work lives in [kernel-spec-stage6-packets-draft.md](kernel-spec-stage6-packets-draft.md).
 
 ## Stage 5 Goal
 

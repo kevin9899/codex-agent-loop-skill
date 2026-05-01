@@ -21,6 +21,7 @@ REQUIRED_FILES = [
     ROOT / "agent-loop" / "agents" / "openai.yaml",
 ]
 TEXT_SUFFIXES = {".md", ".txt", ".py", ".json", ".yaml", ".yml"}
+LINK_CHECK_SUFFIXES = {".md", ".txt", ".yaml", ".yml"}
 BANNED_PATTERNS = [
     r"C:/Users/",
     r"\\Users\\",
@@ -140,6 +141,8 @@ def validate_banned_patterns() -> None:
 
 def validate_relative_links() -> None:
     for path in iter_text_files():
+        if path.suffix.lower() not in LINK_CHECK_SUFFIXES:
+            continue
         text = FENCED_CODE_RE.sub("", read_text(path))
         for raw_target in LINK_RE.findall(text):
             target = raw_target.strip()

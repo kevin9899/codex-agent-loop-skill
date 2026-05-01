@@ -1,19 +1,23 @@
 # Stage 6 Packet Draft
 
-This draft is a supporting design appendix for the public skill. `SKILL.md` remains the only public operator contract.
-
 These references are non-authoritative maintainer appendices. They may explain lower-level lifecycle or packet detail, but they do not add, widen, or override the public operator contract in `SKILL.md`.
 
-This draft turns the Stage 1-5 kernel into minimal role packets.
+> Note:
+> In normal `$loop` use, the default delegated Codex mix is 5 viewpoints:
+> `architecture_dependency`, `failure_verification`, `goal_efficiency`,
+> `requirement_alignment`, and `implementation_quality`. Optional Claude
+> evidence is capped to those same 5 viewpoints and remains explicit opt-in.
+
+This draft turns the validated Stage 1-5 kernel into minimal role packets.
 
 It does not finalize public skill reflection or repo-local agent assets yet.
 
-It assumes these files remain the current supporting references for lifecycle and oracle behavior:
+It assumes these files are already authoritative for lifecycle and oracle behavior:
 
-- [kernel-spec-stage1-3-draft.md](./kernel-spec-stage1-3-draft.md)
-- [kernel-spec-stage5-oracle-draft.md](./kernel-spec-stage5-oracle-draft.md)
+- [kernel-spec-stage1-3-draft.md](kernel-spec-stage1-3-draft.md)
+- [kernel-spec-stage5-oracle-draft.md](kernel-spec-stage5-oracle-draft.md)
 
-If Stage 6 passes, the next downstream template work lives in [kernel-spec-stage7-packet-templates-draft.md](./kernel-spec-stage7-packet-templates-draft.md).
+If Stage 6 passes, the next downstream template work lives in [kernel-spec-stage7-packet-templates-draft.md](kernel-spec-stage7-packet-templates-draft.md).
 
 ## Stage 6 Goal
 
@@ -31,7 +35,7 @@ Stage 6 is valid only when:
 ## Global Packet Rules
 
 - Before any delegated packet is emitted, the controller resolves one concrete strongest-model pin from the local runtime config plus the current local model catalog.
-- All delegated lanes use that exact resolved hard pin for the full live invocation unless the user explicitly overrides it before dispatch.
+- All delegated lanes use that exact resolved hard pin for the full live invocation unless the runtime model catalog changes before dispatch.
 - Emitting a packet is not sufficient by itself; the matching delegated `spawn_agent` call must also carry the same concrete `model` and `reasoning_effort` fields.
 - The main CLI thread owns orchestration and may consume packet outputs, but it does not relax packet authority.
 - Packets may reference only authoritative artifacts or explicitly named draft candidates from the current lane.
@@ -52,6 +56,7 @@ Every delegated packet must carry at least:
 - `resolved_model_slug`
 - `resolved_reasoning_effort`
 - `model_resolution_basis_ref`
+- `spawn_model_binding=explicit_tool_args`
 - `dispatch_mode=bootstrap|resume`
 - `run_id`
 - `cycle_id`
@@ -73,8 +78,9 @@ Required common rules:
 - `request_intent_ref` must be one of `planning_deliverable_only|end_to_end_progress`
 - `model_policy` must be `resolved_strongest_hard_pin`
 - `resolved_model_slug` and `resolved_reasoning_effort` must be concrete whenever the controller successfully resolved the current strongest model pin before dispatch
-- all delegated packets in the same live invocation must carry the same `resolved_model_slug` and `resolved_reasoning_effort` unless the user explicitly overrides before the next dispatch
+- all delegated packets in the same live invocation must carry the same `resolved_model_slug` and `resolved_reasoning_effort` unless the runtime model catalog changes before the next dispatch
 - the delegated `spawn_agent` call that consumes the packet must pass `model=<resolved_model_slug>` and `reasoning_effort=<resolved_reasoning_effort>` explicitly
+- halt/completion proof for the lane must record the matching `spawn_tool_args_model`, `spawn_tool_args_reasoning_effort`, and a concrete `spawn_tool_call_ref`
 - any delegated output produced without the packet's concrete model pin, or on a weaker model/effort pair, is inadmissible
 - `authoritative_inputs` must name exact artifact refs, not prose descriptions alone
 - `forbidden_actions` must include any controller mutation the role is not allowed to perform
@@ -113,16 +119,18 @@ No other delegated packet kind is required at Stage 6.
 - after each cycle close through `commit|rescope|escalate`
 - after a full current plan is exhausted
 
-Exactly three `research_packet` emissions must occur per research phase, one per
+Exactly five `research_packet` emissions must occur per research phase, one per
 `research_viewpoint`:
 
 - `architecture_dependency`
 - `failure_verification`
 - `goal_efficiency`
+- `requirement_alignment`
+- `implementation_quality`
 
 The first `research_packet` pass is mandatory regardless of source shape. A source packet that
 already looks like a plan, roadmap, authority note, or implementation checklist still enters the
-same initial `research -> planning -> challenge -> integrate_plan` path before any
+same initial `ideation -> research -> planning -> challenge -> integrate_plan` path before any
 execution-stage dispatch becomes legal.
 
 ### Required Inputs
@@ -176,7 +184,7 @@ A research phase is complete only when the main CLI has assembled one merged
 `research_synthesis_candidate` with:
 
 - `synthesis_mode=merged`
-- `research_viewpoint_set={architecture_dependency,failure_verification,goal_efficiency}`
+- `research_viewpoint_set={architecture_dependency,failure_verification,goal_efficiency,requirement_alignment,implementation_quality}`
 - concrete `lane_candidate_refs` that map each required viewpoint to one lane-local candidate from
   the current research phase
 
@@ -229,7 +237,7 @@ Every `planning_packet` must carry at least one concrete research basis:
 - `latest authoritative research_synthesis`
 
 Any research artifact consumed by `planning_packet` must expose exact
-`research_viewpoint_set={architecture_dependency,failure_verification,goal_efficiency}`.
+`research_viewpoint_set={architecture_dependency,failure_verification,goal_efficiency,requirement_alignment,implementation_quality}`.
 
 ### Required Outputs
 
@@ -261,7 +269,7 @@ source-document wording alone.
 If `request_intent_ref=end_to_end_progress`, `run_intent` must be `implementation_oriented`.
 
 If `request_intent_ref=planning_deliverable_only`, the loop still must complete the same initial
-`research -> planning -> challenge -> integrate_plan` path before the run may stop with the
+`ideation -> research -> planning -> challenge -> integrate_plan` path before the run may stop with the
 authoritative `revised_plan` as its requested deliverable.
 
 Concrete `current_stage` entries must contain at least:
@@ -307,11 +315,13 @@ preparatory-only endpoints, or narrowed success conditions must be corrected in 
 
 `challenge_packet` is used for both plan challenge and verify challenge.
 
-Exactly three challenge packets must be emitted per challenge phase, one per viewpoint:
+Exactly five challenge packets must be emitted per challenge phase, one per viewpoint:
 
 - `architecture_dependency`
 - `failure_verification`
 - `goal_efficiency`
+- `requirement_alignment`
+- `implementation_quality`
 
 ### Required Inputs
 
@@ -479,9 +489,9 @@ It is the only packet allowed to prepare barrier-scoped authority changes.
 - current authoritative `evidence_packet_ref` when `seal_point=integrate_verify` revalidation consumes an existing evidence target
 - `seal_point`
 - candidate artifacts relevant to the current seal point:
-  - merged `research_synthesis_candidate` with exact `research_viewpoint_set={architecture_dependency,failure_verification,goal_efficiency}` when `seal_point=integrate_plan|goal_reassessment`
+  - merged `research_synthesis_candidate` with exact `research_viewpoint_set={architecture_dependency,failure_verification,goal_efficiency,requirement_alignment,implementation_quality}` when `seal_point=integrate_plan|goal_reassessment`
   - `revised_plan_candidate`
-  - `challenge_result_candidates` as an exact three-item set keyed by `architecture_dependency`, `failure_verification`, and `goal_efficiency` when `seal_point=integrate_plan|integrate_verify`; when `seal_point=integrate_verify`, exactly one legal subcase must hold:
+  - `challenge_result_candidates` as an exact five-item set keyed by `architecture_dependency`, `failure_verification`, `goal_efficiency`, `requirement_alignment`, and `implementation_quality` when `seal_point=integrate_plan|integrate_verify`; when `seal_point=integrate_verify`, exactly one legal subcase must hold:
     - current-pass subcase: concrete `verification_candidate`, and each candidate carries `phase=verify_phase`, `challenge_review_mode=verify_current_pass`, and `review_target_ref` equal to the current `verification_candidate`
     - revalidation subcase: concrete authoritative `evidence_packet_ref`, and each candidate carries `phase=verify_phase`, `challenge_review_mode=post_close_revalidation|cold_start_revalidation`, and `review_target_ref` equal to that authoritative `evidence_packet_ref`
   - concrete `verification_candidate` only for the `integrate_verify` current-pass subcase
@@ -548,11 +558,11 @@ Seal-point bundle rules:
 | --- | --- | --- |
 | `research` | `research_packet` | `research_synthesis_candidate` |
 | `planning` | `planning_packet` | `revised_plan_candidate` |
-| `plan_challenge` | three `challenge_packet` with `phase=planning_phase` | three `challenge_result_candidate` |
+| `plan_challenge` | five `challenge_packet` with `phase=planning_phase` | five `challenge_result_candidate` |
 | `integrate_plan` | `integration_packet` with `seal_point=integrate_plan` | `integration_result_candidate` |
 | `execute` | one or more `worker_packet` | `worker_delta_candidate` |
 | `verify` | `verification_packet` | `verification_candidate` |
-| `verify_challenge` | three `challenge_packet` with `phase=verify_phase` | three `challenge_result_candidate` |
+| `verify_challenge` | five `challenge_packet` with `phase=verify_phase` | five `challenge_result_candidate` |
 | `integrate_verify` | `integration_packet` with `seal_point=integrate_verify` | `integration_result_candidate` |
 | `cycle_decision` | main CLI / `integration_packet` with `seal_point=cycle_decision` | `integration_result_candidate` |
 | `goal_reassessment` | `research_packet` then `integration_packet` with `seal_point=goal_reassessment` | `integration_result_candidate` |
