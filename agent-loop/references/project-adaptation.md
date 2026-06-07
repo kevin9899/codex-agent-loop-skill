@@ -23,7 +23,24 @@ Do not use this file when the user only wants:
 
 ## Repo Handoff Checklist
 
-### 1. Read the project contract
+### 1. Select the project adapter
+
+Create or load a `project_adapter_manifest`. It may declare:
+
+- repo and VCS identity
+- writable and read-only roots
+- verification commands by `work_type`
+- external-service and quota limits
+- dev-server policy
+- artifact storage roots
+- supported completion subject types
+- local instruction refs
+- fallback behavior
+
+If the project has no manifest, use the conservative default adapter. Missing
+manifest data never expands authority.
+
+### 2. Read the project contract
 
 Identify the host repo's operating contract:
 
@@ -34,7 +51,24 @@ Identify the host repo's operating contract:
 
 Make every delegated agent inherit that contract.
 
-### 2. Preserve the boundary
+### 3. Validate overrides
+
+Accept `agent_loop_override` only for the global allowlist:
+
+- local verification command mapping
+- artifact root aliases
+- quota limits
+- dev-server policy
+- extra nonterminal evidence requirements
+- project-specific subject validators
+- stricter output constraints
+
+Project config must not alter global work-type resolution, lane roles, verdict
+meanings, final proof semantics, model policy, stop gates, challenge
+aggregation, artifact digest rules, authority fencing, or visible-output
+contracts.
+
+### 4. Preserve the boundary
 
 Keep these concepts separate:
 
@@ -44,10 +78,11 @@ Keep these concepts separate:
 
 If the user did not ask for a product command, do not invent one.
 
-### 3. Map the revised plan into repo work
+### 5. Map the revised plan into repo work
 
 Translate the revised plan into repo-local execution terms:
 
+- work type and completion subject
 - current stage
 - target files
 - parallel worker slices
@@ -58,53 +93,56 @@ Translate the revised plan into repo-local execution terms:
 
 Do not throw away the revised plan and restart from scratch.
 
-### 4. Keep the main thread thin
+### 6. Keep the main thread thin
 
 - let the main CLI thread orchestrate
 - keep worker context narrow
 - integrate results back into the stage plan
 - do not let the main thread absorb the full context of every subtask if bounded workers can carry it
 
-### 5. Respect the dirty worktree
+### 7. Respect the dirty worktree
 
 - preserve unrelated changes
 - do not revert user work
 - stop if conflicting dirty changes make the current path ambiguous
 
-### 6. Keep execution stage-bounded
+### 8. Keep execution stage-bounded
 
 Even inside a repo, execute only the current stage.
 
 Do not let a broad backlog note turn into broad code churn.
 
-### 7. Verify before commit
+### 9. Verify before commit
 
 When repo execution happens:
 
 - run the planned checks
 - collect direct evidence
-- run five fresh verify challengers
-- close blocking findings before commit
+- run fresh verify challengers only when the risk tier or changed surface calls
+  for them; tier0/tier1 deterministic fast paths may use targeted local
+  verification plus recorded `fast_path_reason`
+- close blocking findings before handoff or any user-requested commit
 
-### 8. Commit at the stage boundary
+### 10. Commit at the stage boundary
 
-When the current stage passes:
+When the current stage passes and the user/designated index owner wants a
+commit:
 
-- commit that stage
+- stage only owned paths and create the requested commit
 - update the progress ledger
 - revise the remaining stage queue
 
-### 9. Re-research after every stage
+### 11. Reassess research only when it can change the next stage
 
-After each verified stage commit:
+After each verified stage or commit:
 
-- run fresh research
-- search for better sequencing
-- search for more efficient approaches
-- search for higher-quality implementation opportunities tied to the same goal
+- run fresh research when new evidence, new constraints, material risk, or
+  remaining-stage uncertainty justifies it
+- search for better sequencing, efficiency, or quality opportunities when they
+  can change the next bounded action
 - revise the remaining plan before starting the next stage
 
-### 10. Productization is downstream
+### 12. Productization is downstream
 
 If the user later wants a product `/loop` or runtime embedding:
 
@@ -123,3 +161,6 @@ The adaptation is correct when:
 - verified stages commit cleanly
 - fresh research can still revise the remaining plan
 - the repository did not become the source of truth for the loop itself
+- project-specific lessons are classified as `global_invariant`,
+  `project_adapter_rule`, `project_local_hint`, or `rejected_local_hack` before
+  any global skill change

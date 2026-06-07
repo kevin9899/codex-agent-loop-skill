@@ -109,7 +109,7 @@ def validate_run_dir(run_dir_arg: str, lines: list[str]) -> list[str]:
         errors.append(f"planning_complete reply must contain exactly {len(PLANNING_COMPLETE_REPLY_PREFIXES)} non-empty lines")
         return errors
 
-    expected_resume = flatten_multivalue_text(fields.get("resume_instructions", ""))
+    expected_resume = flatten_multivalue_text(fields.get("resume_instructions", "")).replace("`", "")
     expected = {
         "loop_state=": clean_value(str(fields.get("loop_state", ""))),
         "run_decision=": run_decision,

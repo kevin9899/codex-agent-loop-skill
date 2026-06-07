@@ -4,9 +4,9 @@
 > The default `$loop` profile is now the pragmatic file-backed supervisor described in `../SKILL.md`.
 > This document is a higher-rigor architecture layer for environments that actually provide durable delegated runtime support.
 > Do not treat the receipt-heavy same-invocation protocol below as the default legality gate for normal Codex-side `$loop` use.
-> The default live Codex contract is `5 Codex` research, `5 Codex` plan challenge, local execution, fresh `5 Codex` verify, and `5 Codex` autonomous halt review.
+> The default live Codex contract is mandatory `5 Codex` initial research for material non-fast-path/non-self-check work, mandatory plan lock, mandatory mini `2 Codex` pre/post implementation plan validation for delegated file-changing batches, local execution, fresh `5 Codex` verify/challenge where applicable, and `5 Codex` autonomous halt/completion review. Validator-recognized tier0/tier1 deterministic fast paths may skip delegated initial research only with explicit fast-path evidence, and ordinary `tier1_local` work may use structured self-check evidence when risk does not expand.
 > Claude is opt-in evidence only and must not be counted unless the user explicitly requested Claude for that run.
-> References below to `exactly three` or `exact-three` describe a legacy kernel viewpoint subset, not the pragmatic default execution mix.
+> Non-final challenge/verification phases now use the same five distinct Codex challenge viewpoints as final proof.
 
 ## What This Skill Actually Does
 
@@ -90,28 +90,54 @@ The loop is orchestrated through explicit role lanes:
 - `planning`
   Builds or revises the staged executable plan from source plus research.
 - `challenge`
-  Runs five parallel viewpoints against the plan or the verification artifacts.
+  Runs five distinct viewpoints against the plan or the verification artifacts.
 - `execution`
   Implements the current stage through bounded workers.
 - `verification`
   Runs checks, interprets artifacts, and prepares evidence for verify challenge.
+  When delegated for a file-changing accepted gate, it records
+  `agent_role=verification_agent` and produces the `verification_agent_ref`
+  artifact consumed by later challenge lanes.
 - `orchestration`
   Lives in the main CLI thread and keeps context small, state explicit, and stage boundaries clean.
 
-All of these lanes should use the same resolved strongest hard pin for the live invocation. In the current local Codex environment that resolves to `gpt-5.5` with `xhigh` unless the runtime config/catalog changes before dispatch. The operator must pass that pair explicitly on every delegated `spawn_agent` call rather than relying on inherited defaults. This loop is not designed to save cost by downshifting research, planning, challenge, verification, or execution judgment.
+All delegated lanes must use an explicit `gpt-5.5/high` or stronger model on
+the actual `spawn_agent` call rather than relying on inherited defaults. 5.4,
+Spark, 5.3, mini-model lanes, and `low`/`medium` reasoning effort are not
+authoritative for this loop. Plan authority and final ratification must include
+the strongest available Codex model, currently `gpt-5.5/xhigh`; strategy,
+planning, and verification challenge panels use the phase-required five-lane
+mix. Material initial research, halt, and completion panels use five lanes with
+three `gpt-5.5/xhigh` lanes and two `gpt-5.5/high` lanes. Bounded
+implementation workers also use at least `gpt-5.5/high`.
 
-Research phases may also be enriched by advisory external Claude lanes only when explicit external-Claude opt-in is recorded for the current run and `claude` CLI is installed. By default this mirrors the five core viewpoints; high-difficulty work stays capped at those same five viewpoints. A distinct autonomous-halt `stop_authorization` gate uses the same capped five-viewpoint set on both Codex and Claude sides. These Claude lanes do not replace Codex research judgment. They are parallel evidence sources only, dispatched one fresh session per viewpoint through `scripts/run-claude-research.mjs`, normally pinned to `CLAUDE_CODE_HIGHEST_MODEL` or `opus` with `max` effort, and merged by the main CLI before planning, run-decision, or autonomous-halt classification consumes the result. `claude` CLI availability alone is never authorization. Claude permission bypass flags require a separate explicit opt-in via `--dangerously-bypass-permissions` or `AGENT_LOOP_CLAUDE_BYPASS_PERMISSIONS=1`.
+Research phases may also be enriched by advisory external Claude lanes only
+when explicit external-Claude opt-in is recorded for the current run and
+`claude` CLI is installed. By default this mirrors the phase-required Codex
+viewpoints: five lanes for material research and five lanes for non-final
+challenge phases. A distinct autonomous-halt `stop_authorization` gate is
+Codex-authoritative and requires the fresh five-lane halt proof; Claude lanes
+remain evidence-only and do not count toward halt or completion. These Claude
+lanes do not replace Codex research judgment. They are parallel evidence
+sources only, dispatched one fresh session per viewpoint through
+`scripts/run-claude-research.mjs`, normally
+pinned to `CLAUDE_CODE_HIGHEST_MODEL` or `opus` with `max` effort, and merged by
+the main CLI before planning, run-decision, or autonomous-halt classification
+consumes the result. `claude` CLI availability alone is never authorization.
+Claude permission bypass flags require a separate explicit opt-in via
+`--dangerously-bypass-permissions` or
+`AGENT_LOOP_CLAUDE_BYPASS_PERMISSIONS=1`.
 
 ## Challenge Viewpoints
 
 Run exactly five challengers for each challenge phase:
 
 1. `architecture_dependency`
-   Focus on structure, dependency order, ownership seams, and hidden coupling.
+   Focus on structure, dependency order, ownership, hidden coupling, and adapter boundaries.
 2. `failure_verification`
    Focus on bugs, regressions, missing gates, observability gaps, and weak verification.
 3. `goal_efficiency`
-   Focus on drift from source intent, overscope, inefficient sequencing, and better leverage.
+   Focus on avoidable friction, overscope, noisy gates, and better sequencing.
 4. `requirement_alignment`
    Focus on the explicit user ask, success conditions, sequential objectives, and scope drift.
 5. `implementation_quality`
@@ -134,7 +160,7 @@ Conceptually, the loop moves through:
 - research validation of source facts and ideation candidates
 - opt-in advisory Claude research lanes in parallel with the default Codex research lanes
 - staged plan reconstruction
-- five-viewpoint challenge and revision
+- five-lane challenge and revision
 - one bounded stage of execution
 - verification plus five fresh verify challengers
 - stage close through commit when applicable, or explicit rescope / escalate when not
@@ -146,7 +172,7 @@ The crucial property is that the system should be able to preserve resumability 
 In the validated kernel, that resumability comes from the latest sealed `handoff_packet` after fresh preflight. `revised_plan`, evidence, and claim state are only the handoff-referenced authoritative state consulted through that sealed lineage, not parallel resume authority.
 
 Operationally, the loop must distinguish three end categories: terminal planning-deliverable closure, terminal run stop, and live-invocation pause. Only `stop_goal_saturated|stop_escalation_halt` are terminal run stop postures; `stop_planning_deliverable` remains the separate planning-only terminal planning closure. Reasons such as user pause, approval wait, dirty-change conflict, or recorded time/resource ceiling are non-terminal pauses and are legal only after the latest sealed `handoff_packet` already exposes the authoritative cold-start resume path. A ceiling pause must also name the concrete measured cap, current consumption, whether the stored resume state is directly dispatchable or lineage-only, and the next mandatory dispatch after fresh preflight.
-Any autonomous user-visible pause or stop additionally requires a full `5 Codex` explicit-allow `stop_authorization` gate on the capped viewpoint set. That proof must name the exact `viewpoint_set`, bind all five lane artifacts to one concrete fresh `challenge_round_id`, and each referenced lane artifact must record its own `viewpoint`, matching `challenge_round_id`, and fresh status. Matching `5 Claude` lanes are optional evidence only when Claude was explicitly requested and actually executed for that run. User-requested pauses and pauses that exist only to wait on direct human authority are the narrow exemptions because the halt authority is external rather than autonomous.
+Any autonomous user-visible pause or stop additionally requires a full `5 Codex` explicit-allow `stop_authorization` gate on the final viewpoint set. That proof must name the exact `viewpoint_set`, bind all five lane artifacts to one concrete fresh `challenge_round_id`, and each referenced lane artifact must record its own `viewpoint`, `coverage_viewpoints`, matching `challenge_round_id`, `agent_role=challenge_agent`, the phase-specific `challenge_review_mode`, and fresh status. Matching `5 Claude` lanes are optional evidence only when Claude was explicitly requested and actually executed for that run. User-requested pauses and pauses that exist only to wait on direct human authority are the narrow exemptions because the halt authority is external rather than autonomous.
 
 That planning-deliverable terminal path is legal only for `run_intent=planning_only`; an implementation-oriented run may not relabel itself as planning-complete to escape the post-close reassessment and termination-classifier path.
 

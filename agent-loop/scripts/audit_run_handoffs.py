@@ -67,7 +67,7 @@ def classify_legacy_handoff(run_dir: Path) -> tuple[bool, str | None]:
     joined = ", ".join(legacy_hits)
     return True, (
         "legacy handoff schema detected; refresh this run before trusting or resuming it "
-        f"({joined}). Suggested repair: python <agent-loop-skill-dir>/scripts/refresh_legacy_handoffs.py {run_dir} --write --turn-exit-cause <cause> --turn-exit-evidence \"<forced-boundary-proof>\""
+        f"({joined}). Suggested repair: python <skill-dir>/scripts/refresh_legacy_handoffs.py {run_dir} --write --turn-exit-cause <cause> --turn-exit-evidence \"<forced-boundary-proof>\""
     )
 
 

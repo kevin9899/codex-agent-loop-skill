@@ -10,7 +10,14 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from validate_handoff import VERIFIED_COMPLETE_STATUS, clean_value, parse_handoff
+from validate_handoff import (
+    REQUIRED_DELEGATED_AGENT_COUNT,
+    VERIFIED_COMPLETE_STATUS,
+    clean_value,
+    has_stop_authorization_challenge_attempt,
+    is_delegated_quota_blocker,
+    parse_handoff,
+)
 
 
 def gate_env(run_dir: Path) -> dict[str, str]:
@@ -192,15 +199,16 @@ def contains_any_pattern(text: str, patterns: list[str]) -> bool:
     return any(re.search(pattern, text, flags=re.IGNORECASE) for pattern in patterns)
 
 
+def has_delegated_quota_pause_signal(value: str) -> bool:
+    return is_delegated_quota_blocker(value)
+
+
 def delegated_quota_pause_error(fields: dict[str, object]) -> str | None:
     run_decision = clean_value(str(fields.get("run_decision", "")))
     continuation_mode = clean_value(str(fields.get("continuation_mode", "")))
     external_basis = clean_value(str(fields.get("external_authority_basis", "")))
     continue_exit_status = clean_value(str(fields.get("continue_exit_status", "")))
-    evidence = " ".join(
-        clean_value(str(fields.get(name, ""))).lower()
-        for name in ("continue_exit_evidence", "pause_reason", "blocking_findings")
-    )
+    evidence_values = [fields.get(name, "") for name in ("continue_exit_evidence", "pause_reason", "blocking_findings")]
 
     if not (
         run_decision == "pause"
@@ -210,31 +218,7 @@ def delegated_quota_pause_error(fields: dict[str, object]) -> str | None:
     ):
         return None
 
-    has_delegation = contains_any_pattern(
-        evidence,
-        [
-            r"\bspawn_agent\b",
-            r"\bdelegated[- ]agent\b",
-            r"\bdelegated\b",
-            r"\blane\b",
-            r"에이전트",
-        ],
-    )
-    has_quota = contains_any_pattern(
-        evidence,
-        [
-            r"\bquota\b",
-            r"\busage limit\b",
-            r"\brate limit\b",
-            r"\bcredits?\b",
-            r"\btry again\b",
-            r"사용량",
-            r"한도",
-            r"쿼터",
-            r"크레딧",
-        ],
-    )
-    if not (has_delegation and has_quota):
+    if not any(has_delegated_quota_pause_signal(value) for value in evidence_values):
         return None
 
     return (
@@ -300,6 +284,98 @@ def hard_turn_end_confirmation_error(fields: dict[str, object]) -> str | None:
     return None
 
 
+def durable_continue_closeout_error(fields: dict[str, object], run_dir: Path) -> str | None:
+    host_resume_mode = clean_value(str(fields.get("host_resume_mode", "")))
+    run_decision = clean_value(str(fields.get("run_decision", "")))
+    continuation_mode = clean_value(str(fields.get("continuation_mode", "")))
+    goal_status = clean_value(str(fields.get("goal_completion_status", "")))
+    next_action = clean_value(str(fields.get("next_mandatory_action", "")))
+
+    if not (
+        host_resume_mode == "durable_runtime"
+        and run_decision == "continue"
+        and continuation_mode == "nonstop"
+        and goal_status != VERIFIED_COMPLETE_STATUS
+        and bool(next_action)
+    ):
+        return None
+
+    combined_blocker_text = " ".join(
+        clean_value(str(fields.get(name, ""))).lower()
+        for name in (
+            "current_or_next_stage",
+            "next_mandatory_action",
+            "blocking_findings",
+            "continue_exit_evidence",
+            "turn_exit_evidence",
+        )
+    )
+    commit_authority_blocked = contains_any_pattern(
+        combined_blocker_text,
+        [
+            r"\bcommit\b",
+            r"\bgit add\b",
+            r"\bgit commit\b",
+            r"\bhead-bound\b",
+            r"\bhead_bound\b",
+            r"\bcommit authority\b",
+            r"\bcommit permission\b",
+            r"\$loop\s*커밋",
+            r"커밋",
+        ],
+    )
+    if commit_authority_blocked and not truthy_env("AGENT_LOOP_ALLOW_VISIBLE_COMMIT_AUTHORITY_CONTINUE"):
+        return (
+            "closeout_gate.py refused a durable-runtime continue reply for a commit-authority blocker. "
+            "A final-channel continue receipt is easily perceived as a stop. Keep executing bounded "
+            "non-commit work, record a commentary status, or reach a real terminal stop after explicit "
+            "$loop 커밋 authority and HEAD-bound proof. Set AGENT_LOOP_ALLOW_VISIBLE_COMMIT_AUTHORITY_CONTINUE=1 "
+            "only for an unavoidable host boundary after the user has not forbidden visible continue receipts."
+        )
+
+    if not truthy_env("AGENT_LOOP_NO_BOUNDED_LOCAL_ACTIONS_REMAIN"):
+        return (
+            "closeout_gate.py refused a durable-runtime continue reply because "
+            "AGENT_LOOP_NO_BOUNDED_LOCAL_ACTIONS_REMAIN=1 was not set. In durable_runtime "
+            "nonstop loops, keep executing another bounded local action instead of emitting "
+            "a final-channel continue receipt unless no local action remains."
+        )
+
+    evidence = env_value("AGENT_LOOP_NO_BOUNDED_LOCAL_ACTIONS_EVIDENCE")
+    if not evidence:
+        return (
+            "closeout_gate.py refused a durable-runtime continue reply because "
+            "AGENT_LOOP_NO_BOUNDED_LOCAL_ACTIONS_EVIDENCE is required. Record why every "
+            "available next action is blocked by external authority, tool/runtime failure, "
+            "or a verified ownership boundary."
+        )
+
+    turn_exit_evidence = clean_value(str(fields.get("turn_exit_evidence", "")))
+    if evidence.lower() not in turn_exit_evidence.lower():
+        return (
+            "closeout_gate.py refused a durable-runtime continue reply because "
+            "AGENT_LOOP_NO_BOUNDED_LOCAL_ACTIONS_EVIDENCE is not echoed in handoff "
+            "turn_exit_evidence. Durable-runtime closeout must prove there is no "
+            "bounded local action to keep executing."
+        )
+
+    closeout_round_id = clean_value(str(fields.get("closeout_round_id", "")))
+    if not has_stop_authorization_challenge_attempt(
+        fields.get("stop_consensus_evidence", ""),
+        run_dir,
+        closeout_round_id,
+    ):
+        return (
+            "closeout_gate.py refused a durable-runtime no-bounded-action closeout "
+            f"without a fresh {REQUIRED_DELEGATED_AGENT_COUNT}-lane stop_authorization challenge attempt. Run the "
+            f"required {REQUIRED_DELEGATED_AGENT_COUNT} challenge lanes against the current authority snapshot; "
+            "if the lanes themselves are blocked, record that dispatch blocker and "
+            f"make retrying the {REQUIRED_DELEGATED_AGENT_COUNT}-lane challenge the next mandatory action."
+        )
+
+    return None
+
+
 def host_boundary_pause_needs_confirmation(fields: dict[str, object]) -> bool:
     run_decision = clean_value(str(fields.get("run_decision", "")))
     continuation_mode = clean_value(str(fields.get("continuation_mode", "")))
@@ -343,6 +419,14 @@ def main() -> int:
         "--blocking-or-risk",
         help="Optional blocker or risk detail for a turn-ending continue reply.",
     )
+    parser.add_argument(
+        "--blocked-action-ko",
+        help="Korean blocked-action line required for blocked_during_attempt continue receipts.",
+    )
+    parser.add_argument(
+        "--needed-condition-ko",
+        help="Korean needed-condition line required for blocked_during_attempt continue receipts.",
+    )
     args = parser.parse_args()
 
     run_dir = Path(args.run_dir).resolve()
@@ -373,6 +457,10 @@ def main() -> int:
             if error:
                 print(error, file=sys.stderr)
                 return 2
+            error = durable_continue_closeout_error(fields, run_dir)
+            if error:
+                print(error, file=sys.stderr)
+                return 2
         if not args.active_delta or not clean_value(args.active_delta):
             print("closeout_gate.py requires --active-delta when run_decision=continue", file=sys.stderr)
             return 1
@@ -385,6 +473,10 @@ def main() -> int:
         ]
         if args.blocking_or_risk:
             command.extend(["--blocking-or-risk", args.blocking_or_risk])
+        if args.blocked_action_ko:
+            command.extend(["--blocked-action-ko", args.blocked_action_ko])
+        if args.needed_condition_ko:
+            command.extend(["--needed-condition-ko", args.needed_condition_ko])
         return run_command(command, run_dir, run_decision, args.active_delta, args.blocking_or_risk)
 
     if run_decision in {"stop", "planning_complete"}:

@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
+import math
 import os
 import re
 import sys
@@ -17,6 +19,10 @@ SCALAR_FIELDS = [
     "capability_mode",
     "current_or_next_stage",
     "stage_status",
+    "current_batch",
+    "risk_tier",
+    "implementation_gate_status",
+    "implementation_gate_evidence",
     "latest_evidence_summary",
     "blocking_findings",
     "residual_risks",
@@ -41,23 +47,206 @@ SCALAR_FIELDS = [
     "resume_instructions",
 ]
 
+OPTIONAL_SCALAR_FIELDS = [
+    "work_type",
+    "review_kind",
+    "authority_record_ref",
+    "run_authority_status",
+    "run_authority_revision",
+    "run_authority_epoch",
+    "source_digest",
+    "stage_graph_digest",
+    "adapter_manifest_ref",
+    "adapter_conformance_status",
+    "adapter_effective_config_digest",
+    "resource_telemetry_ref",
+    "research_cycle_ref",
+    "research_cycle_status",
+    "research_cycle_digest_set",
+    "commit_queue_status",
+    "completion_subject_type",
+    "completion_subject_ref",
+    "completion_subject_digest",
+    "composite_subject_digest",
+    "challenge_cycle_ref",
+    "challenge_cycle_status",
+    "challenge_cycle_digest_set",
+    "visible_output_contract",
+]
+
 LIST_OR_SCALAR_FIELDS = {
     "remaining_required_stages",
 }
 
-CANONICAL_FIELD_NAMES = set(SCALAR_FIELDS) | LIST_OR_SCALAR_FIELDS
+CANONICAL_FIELD_NAMES = set(SCALAR_FIELDS) | set(OPTIONAL_SCALAR_FIELDS) | LIST_OR_SCALAR_FIELDS
 
-# Delegated `$loop` consensus proofs must be produced with the resolved
-# strongest hard pin, not inherited/default subagent settings. Operators may
-# update these environment variables only when the local model catalog changes.
-REQUIRED_DELEGATED_MODEL_SLUG = os.environ.get("AGENT_LOOP_REQUIRED_MODEL", "gpt-5.5").strip()
-REQUIRED_DELEGATED_REASONING_EFFORT = os.environ.get(
-    "AGENT_LOOP_REQUIRED_REASONING_EFFORT",
+# Delegated `$loop` consensus proofs must be produced with explicit gpt-5.5/high
+# or stronger model args, not inherited/default subagent settings. gpt-5.4,
+# Spark, 5.3, and mini-model lanes are intentionally inadmissible for this
+# process.
+HARD_ADMISSIBLE_DELEGATED_MODEL_SLUGS = ("gpt-5.5",)
+HARD_TOP_DELEGATED_MODEL_SLUG = "gpt-5.5"
+HARD_TOP_DELEGATED_REASONING_EFFORT = "xhigh"
+HARD_ALLOWED_DELEGATED_REASONING_EFFORTS = ("xhigh", "high")
+HARD_DELEGATED_CAPABILITY_CLASS_BY_SLUG = {
+    "gpt-5.5": "frontier_loop_authority_v1",
+}
+REQUIRED_DELEGATED_MODEL_POLICY = os.environ.get(
+    "AGENT_LOOP_REQUIRED_MODEL_POLICY",
+    "gpt_5_5_high_minimum_explicit",
+).strip()
+TOP_DELEGATED_MODEL_SLUG = os.environ.get(
+    "AGENT_LOOP_TOP_MODEL",
+    "gpt-5.5",
+).strip()
+TOP_DELEGATED_REASONING_EFFORT = os.environ.get(
+    "AGENT_LOOP_TOP_REASONING_EFFORT",
     "xhigh",
 ).strip()
+REQUIRED_DELEGATED_MODEL_SLUG = os.environ.get(
+    "AGENT_LOOP_REQUIRED_MODEL",
+    TOP_DELEGATED_MODEL_SLUG,
+).strip()
+REQUIRED_DELEGATED_REASONING_EFFORT = os.environ.get(
+    "AGENT_LOOP_REQUIRED_REASONING_EFFORT",
+    TOP_DELEGATED_REASONING_EFFORT,
+).strip()
+MIN_TOP_MODEL_LANES = int(os.environ.get("AGENT_LOOP_MIN_TOP_MODEL_LANES", "5").strip())
+MIN_TOP_XHIGH_LANES = int(os.environ.get("AGENT_LOOP_MIN_TOP_XHIGH_LANES", "3").strip())
+MINIMUM_DELEGATED_REASONING_EFFORTS = ("xhigh", "high")
+ALLOWED_DELEGATED_MODEL_SLUGS = tuple(
+    model.strip().lower()
+    for model in os.environ.get(
+        "AGENT_LOOP_ALLOWED_MODELS",
+        "gpt-5.5",
+    ).split(",")
+    if model.strip()
+)
+ALLOWED_DELEGATED_REASONING_EFFORTS = tuple(
+    effort.strip().lower()
+    for effort in os.environ.get(
+        "AGENT_LOOP_ALLOWED_REASONING_EFFORTS",
+        "xhigh,high",
+    ).split(",")
+    if effort.strip() and effort.strip().lower() in MINIMUM_DELEGATED_REASONING_EFFORTS
+)
+REQUIRED_DELEGATED_CAPABILITY_CLASS = os.environ.get(
+    "AGENT_LOOP_REQUIRED_CAPABILITY_CLASS",
+    "frontier_loop_authority_v1",
+).strip()
+MODEL_CAPABILITY_CLASS_BY_SLUG = {
+    pair.split("=", 1)[0].strip().lower(): pair.split("=", 1)[1].strip()
+    for pair in os.environ.get(
+        "AGENT_LOOP_MODEL_CAPABILITY_CLASSES",
+        "gpt-5.5=frontier_loop_authority_v1",
+    ).split(",")
+    if "=" in pair and pair.split("=", 1)[0].strip() and pair.split("=", 1)[1].strip()
+}
+
+def _fail_if_model_floor_weakened() -> None:
+    if (
+        TOP_DELEGATED_MODEL_SLUG.lower() != HARD_TOP_DELEGATED_MODEL_SLUG
+        or TOP_DELEGATED_REASONING_EFFORT.lower() != HARD_TOP_DELEGATED_REASONING_EFFORT
+        or REQUIRED_DELEGATED_MODEL_SLUG.lower() != HARD_TOP_DELEGATED_MODEL_SLUG
+    ):
+        raise SystemExit(
+            "invalid model floor: delegated loop strongest-model authority requires "
+            f"{HARD_TOP_DELEGATED_MODEL_SLUG}/{HARD_TOP_DELEGATED_REASONING_EFFORT}"
+        )
+    configured_models = {
+        TOP_DELEGATED_MODEL_SLUG.lower(),
+        REQUIRED_DELEGATED_MODEL_SLUG.lower(),
+        *ALLOWED_DELEGATED_MODEL_SLUGS,
+    }
+    unsupported_models = {
+        model
+        for model in configured_models
+        if (
+            model not in HARD_ADMISSIBLE_DELEGATED_MODEL_SLUGS
+            or MODEL_CAPABILITY_CLASS_BY_SLUG.get(model) != HARD_DELEGATED_CAPABILITY_CLASS_BY_SLUG.get(model)
+            or MODEL_CAPABILITY_CLASS_BY_SLUG.get(model) != REQUIRED_DELEGATED_CAPABILITY_CLASS
+        )
+    }
+    if unsupported_models:
+        raise SystemExit(
+            "invalid model floor: delegated loop validation requires capability class "
+            f"{REQUIRED_DELEGATED_CAPABILITY_CLASS}; unsupported model(s): "
+            + ", ".join(sorted(unsupported_models))
+        )
+    configured_efforts = {
+        TOP_DELEGATED_REASONING_EFFORT.lower(),
+        REQUIRED_DELEGATED_REASONING_EFFORT.lower(),
+        *ALLOWED_DELEGATED_REASONING_EFFORTS,
+    }
+    if (
+        REQUIRED_DELEGATED_REASONING_EFFORT.lower() != HARD_TOP_DELEGATED_REASONING_EFFORT
+        or not configured_efforts
+        or not configured_efforts.issubset(set(HARD_ALLOWED_DELEGATED_REASONING_EFFORTS))
+    ):
+        raise SystemExit(
+            "invalid reasoning floor: delegated loop strongest-model authority requires xhigh, "
+            "with high allowed only for explicit lower lanes"
+        )
+
+
+_fail_if_model_floor_weakened()
 REQUIRED_DELEGATED_MODEL_BINDING = "explicit_tool_args"
+REQUIRED_DELEGATED_MODEL_MIX = {
+    (REQUIRED_DELEGATED_CAPABILITY_CLASS, "xhigh"): 3,
+    (REQUIRED_DELEGATED_CAPABILITY_CLASS, "high"): 2,
+}
+REQUIRED_IMPLEMENTATION_CHALLENGE_MODEL_MIX = {
+    (REQUIRED_DELEGATED_CAPABILITY_CLASS, "xhigh"): 3,
+    (REQUIRED_DELEGATED_CAPABILITY_CLASS, "high"): 2,
+}
+REQUIRED_IMPLEMENTATION_MINI_MODEL_MIX = {
+    (REQUIRED_DELEGATED_CAPABILITY_CLASS, "xhigh"): 1,
+    (REQUIRED_DELEGATED_CAPABILITY_CLASS, "high"): 1,
+}
+REQUIRED_IMPLEMENTATION_MINI_PLAN_VIEWPOINTS = {
+    "operator_execution_fit",
+    "verification_evidence_fit",
+}
+REQUIRED_PRE_IMPLEMENTATION_VIEWPOINTS = {
+    "architecture_dependency",
+    "failure_verification",
+    "goal_efficiency",
+    "requirement_alignment",
+    "implementation_quality",
+}
+REQUIRED_POST_IMPLEMENTATION_VIEWPOINTS = {
+    "architecture_dependency",
+    "failure_verification",
+    "goal_efficiency",
+    "requirement_alignment",
+    "implementation_quality",
+}
+REQUIRED_FINAL_POLICY_ROUTE_CONTEXT = "final_halt_completion"
+REQUIRED_FINAL_POLICY_COVERAGE_VERDICT = "route_required_refs_loaded"
+REQUIRED_FINAL_LOADED_POLICY_REF_TOKENS = (
+    "skill.md#nonnegotiableinvariants",
+    "handoff-template.md#finalproof",
+)
+OPTIONAL_PROJECT_POLICY_REF_TOKENS = (
+    "agents.md#loopcompletiongate",
+)
+AGENT_LOOP_SKILL_DIR = Path(
+    os.environ.get(
+        "AGENT_LOOP_SKILL_DIR",
+        str(Path(__file__).resolve().parents[1]),
+    )
+)
+POLICY_REF_DIGEST_RE = re.compile(r"^sha256:[a-f0-9]{64}$", re.IGNORECASE)
 REQUIRED_DELEGATED_AGENT_COUNT = 5
-VERIFIED_COMPLETE_STATUS = f"verified_complete_{REQUIRED_DELEGATED_AGENT_COUNT}agent"
+VERIFIED_COMPLETE_STATUS = "verified_complete_5lane"
+REQUIRED_FINAL_CHALLENGE_AGENT_ROLE = "challenge_agent"
+REQUIRED_STRATEGY_AGENT_ROLE = "strategy_agent"
+REQUIRED_VERIFICATION_AGENT_ROLE = "verification_agent"
+REQUIRED_VERIFICATION_AGENT_MODE = "current_stage_verification"
+REQUIRED_FINAL_CHALLENGE_MODES = {
+    "stop_authorization": "autonomous_stop_challenge",
+    "goal_completion": "goal_completion_challenge",
+}
 REQUIRED_SOURCE_REF = "source.md"
 REQUIRED_IDEAS_REF = "ideas.md"
 REQUIRED_FINAL_AUDIT_CONTEXT_MODE = "clean_source_first"
@@ -67,11 +256,313 @@ REQUIRED_FINAL_AUDIT_CLAIM_FILES_TRUST = "untrusted_ideas_research_revised_plan_
 REQUIRED_FINAL_AUDIT_REPO_INSPECTION = "fresh"
 REQUIRED_FINAL_AUDIT_SCOPE_VERDICT = "original_request_satisfied"
 REQUIRED_GOAL_COMPLETION_ALIGNMENT_VERDICT = "all_source_requirements_satisfied"
+REQUIRED_AUTHORITY_SCHEMA_VERSION = "v3-worktype-authority"
+REQUIRED_AUTHORITY_POLICY_VERSION = "agent-loop-v3-worktype-authority"
+REQUIRED_AUTHORITY_PROMPT_VERSION = "final-5lane-v3"
+REQUIRED_AUTHORITY_VALIDATOR_VERSION = "validate_handoff:v3-worktype-authority:1"
+REQUIRED_CHALLENGE_CYCLE_SCHEMA_VERSION = "challenge-cycle-v1"
+REQUIRED_RESEARCH_CYCLE_SCHEMA_VERSION = "research-cycle-v1"
+REQUIRED_CAS_TRANSITION_RECEIPT_VERSION = "v1"
+REQUIRED_RESEARCH_DISPATCH_PHASE = "initial_research"
+REQUIRED_INITIAL_RESEARCH_LANES = {
+    "architecture_dependency",
+    "failure_verification",
+    "goal_efficiency",
+    "requirement_alignment",
+    "implementation_quality",
+}
+WORK_TYPE_COMPLETION_SUBJECT_TYPES = {
+    "implementation": {"repo_diff", "operation_record"},
+    "research": {"research_packet"},
+    "docs": {"document_artifact"},
+    "planning": {"plan_artifact"},
+    "review": {"plan_review", "artifact_review", "completion_challenge", "audit_packet"},
+    "mixed": {"composite_subject"},
+}
+REVIEW_KIND_COMPLETION_SUBJECT_TYPES = {
+    "plan_review": "plan_review",
+    "artifact_review": "artifact_review",
+    "completion_challenge": "completion_challenge",
+    "audit": "audit_packet",
+}
+ALLOWED_ADAPTER_OVERRIDE_KEYS = {
+    "local_verification_command_mapping",
+    "artifact_root_aliases",
+    "quota_limits",
+    "dev_server_policy",
+    "extra_nonterminal_evidence_requirements",
+    "project_specific_subject_validators",
+    "stricter_output_constraints",
+}
+RESOURCE_TELEMETRY_REQUIRED_PATTERNS = [
+    r"\btelemetry_required\b",
+    r"\bresource_telemetry_required\b",
+    r"\bscheduling_impact=resource\b",
+    r"\bscheduling_impact=quota\b",
+    r"\bscheduling_impact=tool_limit\b",
+    r"\bcontroller_decision=(?:defer_specific_action|shrink_batch|retry_when_available|continue_with_smaller_local_action)\b",
+    r"\btool[-\s]?limits?\b",
+    r"\bquota/tool blocked\b",
+    r"\b(?:delegated|dispatch|spawn_agent|controller|challenge|agent|tool|process)\b.{0,80}\b(?:blocked by quota|quota blocked|usage limits?)\b",
+    r"\b(?:blocked by quota|quota blocked|usage limits?)\b.{0,80}\b(?:delegated|dispatch|spawn_agent|controller|challenge|agent|tool|process)\b",
+    r"\b(?:delegated|dispatch|spawn_agent|controller|challenge|agent|tool|process)\b.{0,80}\bquota\s+limits?\s+(?:reached|hit|exceeded|exhausted)\b",
+    r"\bquota\s+limits?\s+(?:reached|hit|exceeded|exhausted)\b.{0,80}\b(?:delegated|dispatch|spawn_agent|controller|challenge|agent|tool|process)\b",
+    r"\b(?:delegated|dispatch|spawn_agent|controller|challenge|agent|tool|process)\b.{0,80}\bquota\s+(?:reached|hit|exceeded|exhausted)\b",
+    r"\bquota\s+(?:reached|hit|exceeded|exhausted)\b.{0,80}\b(?:delegated|dispatch|spawn_agent|controller|challenge|agent|tool|process)\b",
+    r"\b(?:delegated|dispatch|spawn_agent|controller|challenge|agent|tool|process)\b.{0,80}\bcredits?\s+(?:reached|hit|exceeded|exhausted)\b",
+    r"\bcredits?\s+(?:reached|hit|exceeded|exhausted)\b.{0,80}\b(?:delegated|dispatch|spawn_agent|controller|challenge|agent|tool|process)\b",
+    r"\bresource[-\s]?busy\b",
+    r"\brate[-\s]?limited\b",
+    r"\brate[-\s]?limits?\s+(?:reached|hit|exceeded|exhausted)\b",
+    r"\b(?:reached|hit|exceeded|exhausted)\s+rate[-\s]?limits?\b",
+]
+RESOURCE_TELEMETRY_REAL_SCHEDULING_PATTERNS = [
+    r"\b(?:delegated|dispatch|spawn_agent|controller|challenge|agent|tool|process)\b.{0,80}\b(?:blocked by quota|quota blocked|usage limits?)\b",
+    r"\b(?:blocked by quota|quota blocked|usage limits?)\b.{0,80}\b(?:delegated|dispatch|spawn_agent|controller|challenge|agent|tool|process)\b",
+    r"\b(?:delegated|dispatch|spawn_agent|controller|challenge|agent|tool|process)\b.{0,80}\bquota\s+limits?\s+(?:reached|hit|exceeded|exhausted)\b",
+    r"\bquota\s+limits?\s+(?:reached|hit|exceeded|exhausted)\b.{0,80}\b(?:delegated|dispatch|spawn_agent|controller|challenge|agent|tool|process)\b",
+    r"\b(?:delegated|dispatch|spawn_agent|controller|challenge|agent|tool|process)\b.{0,80}\bquota\s+(?:reached|hit|exceeded|exhausted)\b",
+    r"\bquota\s+(?:reached|hit|exceeded|exhausted)\b.{0,80}\b(?:delegated|dispatch|spawn_agent|controller|challenge|agent|tool|process)\b",
+    r"\b(?:delegated|dispatch|spawn_agent|controller|challenge|agent|tool|process)\b.{0,80}\bcredits?\s+(?:reached|hit|exceeded|exhausted)\b",
+    r"\bcredits?\s+(?:reached|hit|exceeded|exhausted)\b.{0,80}\b(?:delegated|dispatch|spawn_agent|controller|challenge|agent|tool|process)\b",
+]
+RESOURCE_TELEMETRY_REAL_SCHEDULING_NEGATED_PATTERNS = [
+    r"\b(?:was(?:\s+not|n't)|not)\s+(?:actually\s+)?blocked\s+by\s+quota\b",
+    r"\b(?:was(?:\s+not|n't)|not)\s+(?:actually\s+)?quota\s+blocked\b",
+    r"\b(?:was(?:\s+not|n't)|not)\s+(?:actually\s+)?blocked\s+by\s+usage\s+limits?\b",
+    r"\b(?:was(?:\s+not|n't)|not)\s+(?:actually\s+)?blocked\s+by\s+tool[-\s]?limits?\b",
+    r"\b(?:was(?:\s+not|n't)|not)\s+(?:actually\s+)?blocked\s+by\s+rate[-\s]?limits?\b",
+    r"\b(?:was(?:\s+not|n't)|not)\s+(?:actually\s+)?blocked\s+by\s+resource[-\s]?busy\b",
+]
+RESOURCE_TELEMETRY_UI_COPY_ONLY_CONTEXT_PATTERNS = [
+    r"\b(?:storybook|mock(?:ed)?|fixture|component)\b.{0,120}\b(?:ui|visual|copy|error state|error-state|error copy|render(?:s|ed|ing)?|display(?:s|ed|ing)?)\b",
+    r"\b(?:ui|visual)\b.{0,80}\b(?:copy|error state|error-state|error copy|render(?:s|ed|ing)?|display(?:s|ed|ing)?)\b",
+    r"\b(?:copy only|error copy|error-state copy)\b",
+    r"\b(?:render(?:s|ed|ing)?|display(?:s|ed|ing)?)\b.{0,80}\b(?:copy|error state|error-state|error copy)\b",
+    r"(?:ui|오류\s*상태|문구|표시(?:함|됨)?|렌더).{0,80}(?:에이전트|사용량|한도|쿼터)",
+    r"(?:에이전트|사용량|한도|쿼터).{0,80}(?:ui|오류\s*상태|문구|표시(?:함|됨)?|렌더)",
+]
+RESOURCE_TELEMETRY_AMBIGUOUS_COPY_LABEL_PATTERNS = [
+    r"^\s*(?:dispatch\s+)?(?:blocked\s+by\s+quota|quota\s+blocked|usage\s+limits?)\s*$",
+    r"^\s*quota/tool\s+blocked\s*$",
+    r"^\s*tool[-\s]?limits?\s*$",
+]
+RESOURCE_TELEMETRY_EXPLICIT_DECISION_PATTERNS = [
+    r"\btelemetry_required\b",
+    r"\bresource_telemetry_required\b",
+    r"\bscheduling_impact=(?:resource|quota|tool_limit)\b",
+    r"\bcontroller_decision=(?:defer_specific_action|shrink_batch|retry_when_available|continue_with_smaller_local_action)\b",
+]
+RESOURCE_TELEMETRY_NEGATED_PATTERNS = [
+    r"\bnot\s+(?:rate[-\s]?limited|resource[-\s]?busy|tool[-\s]?limited|quota[-\s]?limited)\b",
+    r"\b(?:usage\s+limits?|rate[-\s]?limits?|resource[-\s]?busy|tool[-\s]?limits?|quota(?:\s+limits?)?)\s+(?:was|were)?\s*(?:ruled\s+out|not\s+present|not\s+observed|absent)\b",
+    r"\bwithout\s+(?:usage\s+limits?|rate[-\s]?limits?|resource[-\s]?busy|tool[-\s]?limits?|quota(?:\s+limits?)?)\b",
+    r"\bno\s+(?:usage\s+limits?|rate[-\s]?limits?|resource[-\s]?busy|tool[-\s]?limits?|quota(?:\s+limits?)?)\b",
+    r"\bnot\s+blocked\s+by\s+quota\b",
+    r"\bwas(?:\s+not|n't)\s+(?:actually\s+)?blocked\s+by\s+quota\b",
+    r"\b(?:was(?:\s+not|n't)|not)\s+(?:actually\s+)?blocked\s+by\s+(?:usage\s+limits?|tool[-\s]?limits?|rate[-\s]?limits?|resource[-\s]?busy)\b",
+    r"\b(?:usage\s+limits?|tool[-\s]?limits?|rate[-\s]?limits?|resource[-\s]?busy)\s+(?:was|were)\s+(?:ruled\s+out|not\s+present|not\s+observed|absent)\b",
+    r"\b(?:quota(?:\s+limits?)?|usage\s+limits?|tool[-\s]?limits?|rate[-\s]?limits?)\s+(?:(?:was|were|wasn't|weren't)\s+)?not\s+(?:reached|hit|exceeded|exhausted)\b",
+    r"\b(?:quota(?:\s+limits?)?|usage\s+limits?|tool[-\s]?limits?|rate[-\s]?limits?)\s+(?:wasn't|weren't)\s+(?:reached|hit|exceeded|exhausted)\b",
+    r"\b(?:quota(?:\s+limits?)?|usage\s+limits?|tool[-\s]?limits?|rate[-\s]?limits?)\s+(?:has|have)\s+not\s+been\s+(?:reached|hit|exceeded|exhausted)\b",
+    r"\b(?:quota(?:\s+limits?)?|usage\s+limits?|tool[-\s]?limits?|rate[-\s]?limits?)\s+(?:hasn't|haven't)\s+been\s+(?:reached|hit|exceeded|exhausted)\b",
+    r"리소스.{0,20}(아님|없|배제)",
+    r"쿼터.{0,20}(아님|없|배제)",
+    r"레이트.?리밋.{0,20}(아님|없|배제)",
+]
+RESOURCE_TELEMETRY_NON_SCHEDULING_CONTEXT_PATTERNS = [
+    r"\bmock(?:ed)?\b.{0,80}\b(?:rate[-\s]?(?:limited|limits?)|resource[-\s]?busy|tool[-\s]?limits?|quota)\b",
+    r"\b(?:rate[-\s]?(?:limited|limits?)|resource[-\s]?busy|tool[-\s]?limits?|quota)\b.{0,80}\b(?:mock(?:ed)?|fixture|copy|error state|error-state|display|visual|component|storybook)\b",
+    r"\b(?:ui|copy|error state|error-state|component|storybook)\b.{0,80}\b(?:rate[-\s]?(?:limited|limits?)|resource[-\s]?busy|tool[-\s]?limits?|quota)\b",
+    r"\b(?:docs?|documentation|readme|guide)\b.{0,120}\b(?:explain(?:s|ed|ing)?|describ(?:e|es|ed|ing)|document(?:s|ed|ing)?|mention(?:s|ed|ing)?|updated)\b.{0,120}\b(?:rate[-\s]?limits?|resource[-\s]?busy|tool[-\s]?limits?|usage\s+limits?|credits?|quota)\b",
+    r"\b(?:rate[-\s]?limits?|resource[-\s]?busy|tool[-\s]?limits?|usage\s+limits?|credits?|quota)\b.{0,120}\b(?:explain(?:s|ed|ing)?|describ(?:e|es|ed|ing)|document(?:s|ed|ing)?|mention(?:s|ed|ing)?)\b.{0,120}\b(?:docs?|documentation|readme|guide)\b",
+    r"\b(?:docs?|documentation|readme|guide)\b.{0,120}\b(?:explain(?:s|ed|ing)?|describ(?:e|es|ed|ing)|document(?:s|ed|ing)?|mention(?:s|ed|ing)?|updated)\b.{0,120}\b(?:spawn_agent|delegated|dispatch|challenge|agent)\b.{0,120}\b(?:credits?|quota|usage\s+limits?|rate[-\s]?limits?|tool[-\s]?limits?|resource[-\s]?busy)\b",
+    r"\b(?:spawn_agent|delegated|dispatch|challenge|agent)\b.{0,120}\b(?:credits?|quota|usage\s+limits?|rate[-\s]?limits?|tool[-\s]?limits?|resource[-\s]?busy)\b.{0,120}\b(?:explain(?:s|ed|ing)?|describ(?:e|es|ed|ing)|document(?:s|ed|ing)?|mention(?:s|ed|ing)?)\b.{0,120}\b(?:docs?|documentation|readme|guide)\b",
+    r"\b(?:smoke|test|coverage)\b.{0,120}\b(?:coverage|parsing|parser|case|smoke|test)?\b.{0,120}\b(?:tool[-\s]?limits?|resource[-\s]?busy|rate[-\s]?limits?|quota|usage\s+limits?)\b.{0,120}\b(?:passed|verified|covered|coverage|parsing)\b",
+    r"모의.{0,40}(레이트.?리밋|리소스|쿼터)",
+]
+RESOURCE_TELEMETRY_DOC_OR_COPY_PREFIX_SEGMENT_PATTERNS = [
+    r"^\s*(?:docs?|documentation|readme|guide|test|tests?|smoke|coverage)\s*$",
+    r"^\s*(?:korean\s+copy|copy|ui\s+copy|ux\s+copy)\s*$",
+    r"^\s*(?:한국어\s*)?(?:문구|복사문구|ui\s*문구|오류\s*문구)\s*$",
+]
+RESOURCE_TELEMETRY_EVENT_TYPES = {
+    "quota_limit",
+    "rate_limit",
+    "resource_pressure",
+    "tool_unavailable",
+    "process_bottleneck",
+    "usage_limit",
+}
 REQUIRED_CAPABILITY_MODE_TOKENS = (
     "delegated_agents_authorized_by_loop_tool_available",
     "delegated_agents_authorized_by_loop_tool_unavailable",
     "delegated_agents_authorized_by_loop_tool_state_unknown",
 )
+
+
+def delegated_model_is_allowed(model_slug: str, reasoning_effort: str) -> bool:
+    model = clean_value(model_slug).lower()
+    effort = clean_value(reasoning_effort).lower()
+    return (
+        model in HARD_ADMISSIBLE_DELEGATED_MODEL_SLUGS
+        and model in ALLOWED_DELEGATED_MODEL_SLUGS
+        and MODEL_CAPABILITY_CLASS_BY_SLUG.get(model) == HARD_DELEGATED_CAPABILITY_CLASS_BY_SLUG.get(model)
+        and effort in ALLOWED_DELEGATED_REASONING_EFFORTS
+    )
+
+
+def delegated_model_is_top(model_slug: str, reasoning_effort: str) -> bool:
+    return clean_value(model_slug).lower() == TOP_DELEGATED_MODEL_SLUG.lower()
+
+
+def delegated_model_is_top_xhigh(model_slug: str, reasoning_effort: str) -> bool:
+    return (
+        clean_value(model_slug).lower() == TOP_DELEGATED_MODEL_SLUG.lower()
+        and clean_value(reasoning_effort).lower() == TOP_DELEGATED_REASONING_EFFORT.lower()
+    )
+
+
+def delegated_lane_model_key(model_slug: str, reasoning_effort: str) -> tuple[str, str]:
+    model = clean_value(model_slug).lower()
+    capability_class = MODEL_CAPABILITY_CLASS_BY_SLUG.get(model, model)
+    return capability_class, clean_value(reasoning_effort).lower()
+
+
+def split_policy_list(value: object) -> list[str]:
+    text = flatten_multivalue_text(value)
+    return [clean_value(part) for part in re.split(r"[|,]", text) if clean_value(part)]
+
+
+def policy_list_is_exact(value: object, expected: set[str]) -> bool:
+    refs = [re.sub(r"\s+", "", ref.lower()) for ref in split_policy_list(value)]
+    return len(refs) == len(expected) and len(set(refs)) == len(refs) and set(refs) == expected
+
+
+def adapter_declared_policy_ref_tokens(run_dir: Path) -> set[str] | None:
+    authority_path = current_v3_authority_record_path(run_dir)
+    adapter_ref = record_value(authority_path, "adapter_manifest_ref")
+    adapter_path = resolve_artifact_ref(adapter_ref, run_dir)
+    adapter = read_record_json(adapter_path)
+    project_policy_refs = record_json_get(adapter, "project_policy_refs")
+    if project_policy_refs is None:
+        return set()
+    if not isinstance(project_policy_refs, list):
+        return None
+    tokens: set[str] = set()
+    for ref in project_policy_refs:
+        ref_token = re.sub(r"\s+", "", clean_value(str(ref)).lower())
+        if ref_token not in OPTIONAL_PROJECT_POLICY_REF_TOKENS:
+            return None
+        repo_root = repo_root_for_run_dir(run_dir)
+        if ref_token == "agents.md#loopcompletiongate":
+            if repo_root is None or not (repo_root / "AGENTS.md").exists():
+                return None
+        tokens.add(ref_token)
+    return tokens
+
+
+def expected_policy_ref_tokens(run_dir: Path) -> set[str] | None:
+    adapter_tokens = adapter_declared_policy_ref_tokens(run_dir)
+    if adapter_tokens is None:
+        return None
+    tokens = set(REQUIRED_FINAL_LOADED_POLICY_REF_TOKENS) | adapter_tokens
+    repo_root = repo_root_for_run_dir(run_dir)
+    if repo_root is not None and (repo_root / "AGENTS.md").exists():
+        tokens.add("agents.md#loopcompletiongate")
+    return tokens
+
+
+def policy_ref_tokens_are_complete(value: object, run_dir: Path) -> bool:
+    expected = expected_policy_ref_tokens(run_dir)
+    return expected is not None and policy_list_is_exact(value, expected)
+
+
+def markdown_heading_slug(value: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", clean_value(value).lower())
+
+
+def normalized_markdown_section_text(path: Path, anchor: str) -> str | None:
+    if not path.exists() or not path.is_file():
+        return None
+    lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
+    start_index = -1
+    start_level = 0
+    for index, line in enumerate(lines):
+        match = re.match(r"^(#{1,6})\s+(.+?)\s*#*\s*$", line)
+        if match and markdown_heading_slug(match.group(2)) == anchor:
+            start_index = index
+            start_level = len(match.group(1))
+            break
+    if start_index < 0:
+        return None
+    end_index = len(lines)
+    for index in range(start_index + 1, len(lines)):
+        match = re.match(r"^(#{1,6})\s+", lines[index])
+        if match and len(match.group(1)) <= start_level:
+            end_index = index
+            break
+    return "\n".join(lines[start_index:end_index]).rstrip() + "\n"
+
+
+def repo_root_for_run_dir(run_dir: Path) -> Path | None:
+    for authority_path in (run_dir / "authority" / "run-authority.json", run_dir / "run-authority.json"):
+        authority = read_record_json(authority_path)
+        if authority is None:
+            continue
+        for key in ("cwd_root_binding", "project_root_ref"):
+            raw = json_value_text(authority, key)
+            if not raw or raw.lower().startswith("run://"):
+                continue
+            candidate = Path(raw)
+            if not candidate.is_absolute():
+                candidate = (run_dir / candidate).resolve()
+            else:
+                candidate = candidate.resolve()
+            if (candidate / "AGENTS.md").exists():
+                return candidate
+        return None
+    for candidate in [run_dir.resolve(), *run_dir.resolve().parents]:
+        if (candidate / "AGENTS.md").exists():
+            return candidate
+    return None
+
+
+def expected_policy_ref_digests(run_dir: Path) -> list[str]:
+    refs = [
+        (AGENT_LOOP_SKILL_DIR / "SKILL.md", "nonnegotiableinvariants"),
+        (AGENT_LOOP_SKILL_DIR / "references" / "handoff-template.md", "finalproof"),
+    ]
+    project_policy_refs = adapter_declared_policy_ref_tokens(run_dir)
+    if project_policy_refs is None:
+        return []
+    repo_root = repo_root_for_run_dir(run_dir)
+    if repo_root is not None and (repo_root / "AGENTS.md").exists():
+        refs.append((repo_root / "AGENTS.md", "loopcompletiongate"))
+    digests: list[str] = []
+    for path, anchor in refs:
+        section_text = normalized_markdown_section_text(path, anchor)
+        if section_text is None:
+            return []
+        digests.append(f"sha256:{hashlib.sha256(section_text.encode('utf-8')).hexdigest()}")
+    return digests
+
+
+def policy_ref_digests_are_valid(value: object, run_dir: Path) -> bool:
+    digests = split_policy_list(value)
+    expected = expected_policy_ref_digests(run_dir)
+    expected_tokens = expected_policy_ref_tokens(run_dir)
+    if expected_tokens is None:
+        return False
+    return (
+        len(digests) == len(expected_tokens)
+        and len(set(digests)) == len(digests)
+        and all(POLICY_REF_DIGEST_RE.fullmatch(digest) for digest in digests)
+        and len(expected) == len(expected_tokens)
+        and set(digests) == set(expected)
+    )
+
+
 IDEATION_STATUSES = {"completed", "not_material", "reopened"}
 IDEATION_LANE_COUNTS = {"0", "3", "5"}
 IDEATION_SKIP_OR_REOPEN_REASONS = {
@@ -140,6 +631,7 @@ IDEAS_KNOWN_FIELDS = IDEAS_GATE_FIELDS | IDEA_REQUIRED_FIELDS | {
 ENUMS = {
     "handoff_schema_version": {
         "v2-stop-consensus",
+        "v3-worktype-authority",
     },
     "run_intent": {
         "implementation_oriented",
@@ -215,6 +707,111 @@ ENUMS = {
         "completion_candidate",
         VERIFIED_COMPLETE_STATUS,
     },
+    "risk_tier": {
+        "tier0_trivial",
+        "tier1_local",
+        "tier2_material",
+        "tier3_high_risk",
+        "not_classified",
+    },
+    "implementation_gate_status": {
+        "not_applicable",
+        "strategy_pending",
+        "pre_challenge_pending",
+        "implementation_in_progress",
+        "verification_pending",
+        "post_challenge_pending",
+        "accepted",
+        "blocked",
+    },
+    "work_type": {
+        "implementation",
+        "research",
+        "docs",
+        "planning",
+        "review",
+        "mixed",
+        "not_classified",
+    },
+    "review_kind": {
+        "not_applicable",
+        "plan_review",
+        "artifact_review",
+        "completion_challenge",
+        "audit",
+    },
+    "run_authority_status": {
+        "active",
+        "superseded",
+        "completed",
+        "blocked",
+        "quarantined",
+        "not_applicable",
+    },
+    "adapter_conformance_status": {
+        "compatible",
+        "requires_adapter",
+        "requires_migration",
+        "fail_closed",
+        "not_applicable",
+    },
+    "commit_queue_status": {
+        "not_applicable",
+        "intent_needed",
+        "ready_to_commit",
+        "needs_commit_owner",
+        "orphan_or_conflicted",
+        "committed",
+        "blocked",
+    },
+    "completion_subject_type": {
+        "repo_diff",
+        "document_artifact",
+        "research_packet",
+        "plan_artifact",
+        "plan_review",
+        "artifact_review",
+        "completion_challenge",
+        "audit_packet",
+        "operation_record",
+        "composite_subject",
+        "not_classified",
+    },
+    "research_cycle_status": {
+        "not_applicable",
+        "not_run",
+        "running",
+        "deny",
+        "allow_unanimous",
+        "stale",
+        "schema_invalid",
+        "blocked",
+    },
+    "challenge_cycle_status": {
+        "not_applicable",
+        "not_run",
+        "running",
+        "deny",
+        "allow_unanimous",
+        "stale",
+        "schema_invalid",
+    },
+    "visible_output_contract": {
+        "live_status",
+        "challenge_result",
+        "forced_boundary_continue",
+        "blocked_external_gate",
+        "terminal_completion",
+        "not_applicable",
+    },
+}
+
+REQUIRED_STOP_LANES = {
+    "architecture_dependency",
+    "failure_verification",
+    "goal_efficiency",
+    "requirement_alignment",
+    "implementation_quality",
 }
 
 REQUIRED_STOP_VIEWPOINTS = {
@@ -225,6 +822,14 @@ REQUIRED_STOP_VIEWPOINTS = {
     "implementation_quality",
 }
 
+REQUIRED_STOP_LANE_COVERAGE = {
+    "architecture_dependency": {"architecture_dependency"},
+    "failure_verification": {"failure_verification"},
+    "goal_efficiency": {"goal_efficiency"},
+    "requirement_alignment": {"requirement_alignment"},
+    "implementation_quality": {"implementation_quality"},
+}
+
 FRESH_PROOF_STATUSES = {
     "fresh",
     "current_pass",
@@ -232,6 +837,9 @@ FRESH_PROOF_STATUSES = {
 }
 
 SUBJECT_DIGEST_REDACTED_HANDOFF_FIELDS = {
+    "challenge_cycle_digest_set",
+    "challenge_cycle_ref",
+    "challenge_cycle_status",
     "goal_completion_evidence",
     "stop_authorization_evidence",
     "stop_consensus_evidence",
@@ -268,6 +876,19 @@ PLANNING_ONLY_SOURCE_PATTERNS = [
     r"\bplanning only request\b",
     r"계획만",
     r"구현하지 말",
+]
+
+PLAN_EXECUTION_SOURCE_PATTERNS = [
+    r"\bproceed with (?:this|that|the) plan\b",
+    r"\bexecute (?:this|that|the) plan\b",
+    r"\bimplement (?:this|that|the) plan\b",
+    r"\brun (?:this|that|the) roadmap\b",
+    r"\bproceed with (?:this|that|the) roadmap\b",
+    r"해당\s*plan\s*진행",
+    r"plan\s*진행",
+    r"로드맵\s*진행",
+    r"계획\s*진행",
+    r"계획대로\s*진행",
 ]
 
 INFERRED_AUTHORITY_PATTERNS = [
@@ -465,6 +1086,54 @@ NON_HOST_PAUSE_CAUSE_PATTERNS = [
     r"리다이렉트",
 ]
 
+APPROVAL_OR_NO_LOCAL_ACTION_CHALLENGE_PATTERNS = [
+    r"\bno bounded local actions?\b",
+    r"\bno local actions?\b",
+    r"\bno bounded actions?\b",
+    r"\bno tool-backed actions?\b",
+    r"\bno safe local actions?\b",
+    r"\bonly approval[- ](?:needed|required|pending)\b",
+    r"\bapproval[- ](?:needed|required|pending)\b",
+    r"\bawaiting approval\b",
+    r"\bhuman approval\b",
+    r"\bhuman decision\b",
+    r"\bmanual approval\b",
+    r"\bexternal authority\b",
+    r"\bexternal receipt\b",
+    r"\bprovider receipt\b",
+    r"\bproduction authority\b",
+    r"\bcommit owner\b",
+    r"\bindex owner\b",
+    r"\bmanual index\b",
+    r"\bblocked[- ]only\b.{0,80}\b(?:approval|human decision|external authority|manual|no bounded local actions?|no local actions?)\b",
+    r"\bblocker[- ]only\b.{0,80}\b(?:approval|human decision|external authority|manual|no bounded local actions?|no local actions?)\b",
+    r"승인",
+    r"사람 판단",
+    r"외부 권한",
+    r"외부 승인",
+    r"수동 승인",
+    r"커밋 오너",
+    r"인덱스 오너",
+    r"로컬 작업.*없",
+    r"더 할.*없",
+    r"블로커.*남",
+    r"차단.*남",
+]
+
+NO_BOUNDED_LOCAL_ACTION_PATTERNS = [
+    r"\bno bounded local actions?\b",
+    r"\bno local actions?\b",
+    r"\bno bounded actions?\b",
+    r"\bno tool-backed actions?\b",
+    r"\bno safe local actions?\b",
+    r"\bonly approval[- ](?:needed|required|pending)\b",
+    r"\bapproval[- ]only\b",
+    r"\bblocked[- ]only\b.{0,80}\b(?:approval|human decision|external authority|manual|no bounded local actions?|no local actions?)\b",
+    r"\bblocker[- ]only\b.{0,80}\b(?:approval|human decision|external authority|manual|no bounded local actions?|no local actions?)\b",
+    r"로컬 작업.*없",
+    r"더 할.*없",
+]
+
 WEAK_CONTINUE_EXIT_PATTERNS = [
     r"\binspect(?:ed|ing)?\b",
     r"\bread(?:ing)?\b",
@@ -610,8 +1279,8 @@ DELEGATED_QUOTA_BLOCKER_PATTERNS = [
     r"\bagent lane\b",
     r"\blane\b",
     r"\bquota\b",
-    r"\busage limit\b",
-    r"\brate limit\b",
+    r"\busage limits?\b",
+    r"\brate limits?\b",
     r"\bcredits?\b",
     r"\btry again\b",
     r"에이전트",
@@ -674,18 +1343,15 @@ REPORT_DRIVEN_PATTERNS = [
 ]
 
 COMPLETION_GATE_PATTERNS = [
-    r"\b3\b",
-    r"\bagent\b",
-    r"\bcodex\b",
-    r"\bchallenge\b",
-    r"\bverify\b",
-    r"\bverification\b",
-    r"\bcompletion proof\b",
-    r"\bgoal completion\b",
-    r"에이전트",
-    r"챌린지",
-    r"검증",
-    r"완료 증명",
+    r"\bchallenge_review_mode=goal_completion_challenge\b",
+    r"\bgoal[_ -]?completion[_ -]?challenge\b",
+    r"\bgoal[_ -]?completion.{0,40}\b(?:5|five)[_ -]?(?:agent|lane|codex)",
+    r"\b(?:5|five)[_ -]?(?:agent|lane|codex).{0,40}\bgoal[_ -]?completion",
+    r"\bcompletion[_ -]?proof.{0,40}\b(?:5|five)[_ -]?(?:agent|lane|codex)",
+    r"\b(?:5|five)[_ -]?(?:agent|lane|codex).{0,40}\bcompletion[_ -]?proof",
+    r"goal_completion_evidence=.*challenge_review_mode=goal_completion_challenge",
+    r"5.{0,12}(에이전트|lane|codex).{0,40}(완료|goal completion)",
+    r"(완료 증명|goal completion).{0,40}5.{0,12}(에이전트|lane|codex)",
 ]
 
 DELEGATION_PERMISSION_CHECKPOINT_PATTERNS = [
@@ -733,15 +1399,28 @@ def flatten_multivalue_text(value: object) -> str:
     return clean_value(str(value))
 
 
+def iter_flattened_text_values(value: object) -> list[str]:
+    if isinstance(value, list):
+        return [flatten_multivalue_text(item) for item in value if flatten_multivalue_text(item)]
+    return [flatten_multivalue_text(value)] if flatten_multivalue_text(value) else []
+
+
 def contains_any_pattern(text: str, patterns: list[str]) -> bool:
     return any(re.search(pattern, text, flags=re.IGNORECASE) for pattern in patterns)
 
 
+def structured_values(text: str, key: str) -> list[str]:
+    return [
+        clean_value(match.group(1))
+        for match in re.finditer(rf"(?:^|[\s;,`]){re.escape(key)}=([^\s;,\n]+)", text, flags=re.IGNORECASE)
+    ]
+
+
 def extract_structured_value(text: str, key: str) -> str | None:
-    match = re.search(rf"{re.escape(key)}=([^;\n]+)", text, flags=re.IGNORECASE)
-    if not match:
+    values = structured_values(text, key)
+    if len(values) != 1:
         return None
-    return clean_value(match.group(1))
+    return values[0]
 
 
 def extract_inline_token_value(text: str, key: str) -> str | None:
@@ -757,11 +1436,134 @@ def extract_pipe_value_set(text: str | None) -> set[str]:
     return {clean_value(part).lower() for part in text.split("|") if clean_value(part)}
 
 
+def pipe_value_set_is_exact(text: str | None, expected: set[str]) -> bool:
+    if text is None:
+        return False
+    values = [clean_value(part).lower() for part in text.split("|") if clean_value(part)]
+    return len(values) == len(expected) and len(set(values)) == len(values) and set(values) == expected
+
+
+def extract_coverage_viewpoint_set(text: str) -> set[str]:
+    return extract_pipe_value_set(
+        extract_artifact_field(text, "coverage_viewpoints")
+        or extract_artifact_field(text, "covered_viewpoints")
+    )
+
+
+def artifact_pipe_field_is_exact(text: str, key: str, expected: set[str]) -> bool:
+    return pipe_value_set_is_exact(extract_artifact_field(text, key), expected)
+
+
 def normalize_artifact_value(value: str) -> str:
     normalized = clean_value(value)
     # Template values are often rendered as `<...>` inside backticks. Strip
     # one extra code fence layer after markdown key/value parsing.
     return clean_value(normalized)
+
+
+def is_fast_path_authorized(evidence: object, run_dir: Path, risk_tier: str) -> bool:
+    if risk_tier not in {"tier0_trivial", "tier1_local"}:
+        return False
+    text = clean_value(str(evidence))
+    guarded_tokens = (
+        "fast_path_reason",
+        "minimal_plan_ref",
+        "requirement_trace_ref",
+        "local_verification",
+        "verification_ref",
+        "scoped_files",
+        "external_api",
+        "db_or_migration",
+        "security_sensitive",
+        "reversible",
+        "verification_result",
+    )
+    if any(not inline_token_is_unique(text, key) for key in guarded_tokens):
+        return False
+    allowed_reasons = {"single_file_local_fix", "user_specified_exact_change", "no_behavior_change"}
+    reason = clean_value(extract_inline_token_value(text, "fast_path_reason") or "").lower()
+    if reason not in allowed_reasons:
+        return False
+    required_tokens = [
+        "minimal_plan_ref",
+        "requirement_trace_ref",
+        "local_verification",
+        "verification_ref",
+        "scoped_files",
+    ]
+    if any(is_noneish(extract_inline_token_value(text, key) or "") for key in required_tokens):
+        return False
+    for key in ("external_api", "db_or_migration", "security_sensitive"):
+        if clean_value(extract_inline_token_value(text, key) or "").lower() != "false":
+            return False
+    if clean_value(extract_inline_token_value(text, "reversible") or "").lower() != "true":
+        return False
+    if clean_value(extract_inline_token_value(text, "verification_result") or "").lower() not in {"pass", "passed"}:
+        return False
+    minimal_plan_ref = extract_inline_token_value(text, "minimal_plan_ref")
+    trace_ref = extract_inline_token_value(text, "requirement_trace_ref")
+    verification_ref = extract_inline_token_value(text, "verification_ref")
+    return (
+        resolve_artifact_ref(minimal_plan_ref, run_dir) is not None
+        and resolve_artifact_ref(trace_ref, run_dir) is not None
+        and resolve_artifact_ref(verification_ref, run_dir) is not None
+    )
+
+
+def is_tier1_self_check_authorized(evidence: object, run_dir: Path, risk_tier: str) -> bool:
+    if risk_tier != "tier1_local":
+        return False
+    text = clean_value(str(evidence))
+    guarded_tokens = (
+        "tier1_self_check",
+        "risk_expanded",
+        "implementation_summary_ref",
+        "verification_plan_ref",
+        "requirement_trace_ref",
+        "verification_ref",
+        "local_verification",
+        "scope_evidence",
+        "scoped_files",
+        "external_api",
+        "db_or_migration",
+        "security_sensitive",
+        "shared_boundary",
+        "verification_result",
+    )
+    if any(not inline_token_is_unique(text, key) for key in guarded_tokens):
+        return False
+    if clean_value(extract_inline_token_value(text, "tier1_self_check") or "").lower() not in {"pass", "passed"}:
+        return False
+    if clean_value(extract_inline_token_value(text, "risk_expanded") or "").lower() != "false":
+        return False
+    required_tokens = [
+        "implementation_summary_ref",
+        "verification_plan_ref",
+        "requirement_trace_ref",
+        "verification_ref",
+        "local_verification",
+        "scope_evidence",
+        "scoped_files",
+    ]
+    if any(is_noneish(extract_inline_token_value(text, key) or "") for key in required_tokens):
+        return False
+    for key in ("external_api", "db_or_migration", "security_sensitive", "shared_boundary"):
+        if clean_value(extract_inline_token_value(text, key) or "").lower() != "false":
+            return False
+    if clean_value(extract_inline_token_value(text, "verification_result") or "").lower() not in {"pass", "passed"}:
+        return False
+    for key in ("implementation_summary_ref", "verification_plan_ref", "requirement_trace_ref", "verification_ref"):
+        if resolve_artifact_ref(extract_inline_token_value(text, key), run_dir) is None:
+            return False
+    return True
+
+
+def is_research_skip_authorized(evidence: object, run_dir: Path, risk_tier: str) -> bool:
+    return is_fast_path_authorized(evidence, run_dir, risk_tier) or is_tier1_self_check_authorized(
+        evidence,
+        run_dir,
+        risk_tier,
+    )
 
 
 def parse_markdown_key_values(text: str) -> dict[str, str]:
@@ -935,7 +1737,12 @@ def validate_ideas_artifact(path: Path, *, allow_in_progress_ideation: bool = Fa
     if viewpoint_count == "0":
         if ideation_status != "not_material" or skip_or_reopen_reason != "ideation_not_material":
             errors.append("ideas.md viewpoint_count=0 requires ideation_status=not_material and skip_or_reopen_reason=ideation_not_material")
-        if "ideation_not_material" not in lower_text:
+        has_explicit_not_material_rationale = any(
+            "ideation_not_material" in line.lower()
+            and not re.match(r"^\s*-\s*`?skip_or_reopen_reason`?\s*:", line, flags=re.IGNORECASE)
+            for line in text.splitlines()
+        )
+        if not has_explicit_not_material_rationale:
             errors.append("ideas.md viewpoint_count=0 requires an explicit ideation_not_material rationale")
     elif ideation_status == "not_material":
         errors.append("ideas.md ideation_status=not_material requires viewpoint_count=0")
@@ -1067,16 +1874,22 @@ def authority_snapshot_bytes(path: Path) -> bytes:
     # subject digest creates an impossible self-reference. Bind proof to the
     # live authority state by hashing handoff minus proof-evidence payloads.
     lines: list[str] = []
+    redacting_field: str | None = None
     for line in path.read_text(encoding="utf-8", errors="ignore").splitlines():
         stripped = line.lstrip()
-        redacted = False
+        is_top_level_bullet = line.startswith("- ")
+        if redacting_field and not is_top_level_bullet:
+            if line.startswith((" ", "\t")):
+                continue
+            redacting_field = None
+        redacting_field = None
         for field in SUBJECT_DIGEST_REDACTED_HANDOFF_FIELDS:
             if stripped.startswith(f"- `{field}`:"):
                 indent = line[: len(line) - len(stripped)]
                 lines.append(f"{indent}- `{field}`: <redacted-for-subject-digest>")
-                redacted = True
+                redacting_field = field
                 break
-        if not redacted:
+        else:
             lines.append(line)
     return ("\n".join(lines) + "\n").encode("utf-8")
 
@@ -1096,16 +1909,11 @@ def compute_source_digest(run_dir: Path) -> str:
     source_path = run_dir / REQUIRED_SOURCE_REF
     if not source_path.exists() or not source_path.is_file():
         return ""
-
-    digest = hashlib.sha256()
-    digest.update(REQUIRED_SOURCE_REF.encode("utf-8"))
-    digest.update(b"\0")
-    digest.update(source_path.read_bytes())
-    return digest.hexdigest()
+    return hashlib.sha256(source_path.read_bytes()).hexdigest()
 
 
 def latest_authority_mtime(run_dir: Path) -> float:
-    paths = authority_snapshot_paths(run_dir)
+    paths = [path for path in authority_snapshot_paths(run_dir) if path.name != "handoff.md"]
     if not paths:
         return 0.0
     return max(path.stat().st_mtime for path in paths)
@@ -1143,6 +1951,13 @@ def authority_receipt_is_valid(path: Path, expected_kind: str) -> bool:
     return True
 
 
+HOST_BOUNDARY_EVENT_ID_SOURCES = {
+    "controller_generated_same_turn_boundary",
+    "provided_event_id",
+    "host_event_id",
+}
+
+
 def normalize_ref_token(value: str | None) -> str:
     if value is None:
         return ""
@@ -1164,6 +1979,11 @@ def host_boundary_receipt_is_valid(path: Path, closeout_round_id: str, attempt_r
         return False
 
     text = path.read_text(encoding="utf-8", errors="ignore")
+    if is_placeholder_reference(extract_artifact_field(text, "event_id")):
+        return False
+    event_id_source = extract_artifact_field(text, "event_id_source").lower()
+    if event_id_source not in HOST_BOUNDARY_EVENT_ID_SOURCES:
+        return False
     if extract_artifact_field(text, "closeout_round_id").lower() != closeout_round_id.lower():
         return False
 
@@ -1389,12 +2209,21 @@ def source_explicit_planning_only(path: Path) -> bool:
     return any(re.search(pattern, text) for pattern in PLANNING_ONLY_SOURCE_PATTERNS)
 
 
+def source_requests_plan_execution(path: Path) -> bool:
+    if not path.exists():
+        return False
+    text = path.read_text(encoding="utf-8").lower()
+    return any(re.search(pattern, text) for pattern in PLAN_EXECUTION_SOURCE_PATTERNS)
+
+
 def is_inspection_only_continue_exit(status: str, evidence: object) -> bool:
     if clean_value(status) != "next_action_started":
         return False
 
     text = clean_value(str(evidence))
     if not text:
+        return False
+    if has_conflicting_inline_tokens(text, CRITICAL_FINAL_INLINE_FIELDS):
         return False
 
     weak_hit = any(re.search(pattern, text, flags=re.IGNORECASE) for pattern in WEAK_CONTINUE_EXIT_PATTERNS)
@@ -1470,41 +2299,170 @@ def turn_exit_evidence_matches_cause(cause: str, evidence: object) -> bool:
 
 
 def is_delegated_quota_blocker(*values: object) -> bool:
-    combined = " ".join(clean_value(str(value)).lower() for value in values if clean_value(str(value)))
-    if not combined:
-        return False
+    for value in values:
+        for item in iter_flattened_text_values(value):
+            if has_delegated_quota_blocker_signal(item.lower()):
+                return True
+    return False
 
-    has_delegation = contains_any_pattern(
-        combined,
-        [
-            r"\bspawn_agent\b",
-            r"\bdelegated[- ]agent\b",
-            r"\bdelegated\b",
-            r"\bagent lane\b",
-            r"\blane\b",
-            r"에이전트",
-        ],
+
+def has_delegated_quota_blocker_signal(value: str) -> bool:
+    has_ui_copy_context = contains_any_pattern(value, RESOURCE_TELEMETRY_UI_COPY_ONLY_CONTEXT_PATTERNS)
+    segment_records = split_scheduling_signal_segment_records(value)
+    segments = [segment for segment, _separator in segment_records]
+    suppressed_segment_indexes = doc_or_copy_prefixed_segment_indexes(segment_records)
+    actor_patterns = [
+        r"\bspawn_agent\b",
+        r"\bdelegated[- ]agent\b",
+        r"\bdelegated\b",
+        r"\bdispatch\b",
+        r"\bchallenge\b",
+        r"\bagent lane\b",
+        r"\blane\b",
+        r"\bagent\b",
+        r"에이전트",
+    ]
+    quota_patterns = [
+        r"\bquota\b",
+        r"\busage limits?\b",
+        r"\brate limits?\b",
+        r"\bcredits?\b",
+        r"사용량",
+        r"한도",
+        r"쿼터",
+        r"크레딧",
+    ]
+    for index, segment in enumerate(segments):
+        if index in suppressed_segment_indexes:
+            continue
+        if not contains_any_pattern(segment, actor_patterns):
+            continue
+        if not contains_any_pattern(segment, quota_patterns):
+            continue
+        if contains_any_pattern(segment, RESOURCE_TELEMETRY_UI_COPY_ONLY_CONTEXT_PATTERNS):
+            continue
+        if contains_any_pattern(segment, RESOURCE_TELEMETRY_NON_SCHEDULING_CONTEXT_PATTERNS):
+            continue
+        if has_ui_copy_context and contains_any_pattern(segment, RESOURCE_TELEMETRY_AMBIGUOUS_COPY_LABEL_PATTERNS):
+            continue
+        if contains_any_pattern(segment, RESOURCE_TELEMETRY_REAL_SCHEDULING_NEGATED_PATTERNS):
+            continue
+        if contains_any_pattern(segment, RESOURCE_TELEMETRY_NEGATED_PATTERNS):
+            continue
+        return True
+    return has_adjacent_delegated_quota_blocker_signal(
+        segments,
+        actor_patterns=actor_patterns,
+        quota_patterns=quota_patterns,
+        has_ui_copy_context=has_ui_copy_context,
+        suppressed_segment_indexes=suppressed_segment_indexes,
     )
-    has_quota = contains_any_pattern(
-        combined,
-        [
-            r"\bquota\b",
-            r"\busage limit\b",
-            r"\brate limit\b",
-            r"\bcredits?\b",
-            r"\btry again\b",
-            r"사용량",
-            r"한도",
-            r"쿼터",
-            r"크레딧",
-        ],
-    )
-    return has_delegation and has_quota
+
+
+def has_adjacent_delegated_quota_blocker_signal(
+    segments: list[str],
+    *,
+    actor_patterns: list[str],
+    quota_patterns: list[str],
+    has_ui_copy_context: bool,
+    suppressed_segment_indexes: set[int] | None = None,
+) -> bool:
+    suppressed_segment_indexes = suppressed_segment_indexes or set()
+    for index in range(len(segments) - 1):
+        if index in suppressed_segment_indexes or index + 1 in suppressed_segment_indexes:
+            continue
+        current = segments[index]
+        following = segments[index + 1]
+        combined = f"{current} {following}"
+        if contains_any_pattern(current, RESOURCE_TELEMETRY_UI_COPY_ONLY_CONTEXT_PATTERNS):
+            continue
+        if contains_any_pattern(following, RESOURCE_TELEMETRY_UI_COPY_ONLY_CONTEXT_PATTERNS):
+            continue
+        if contains_any_pattern(combined, RESOURCE_TELEMETRY_NON_SCHEDULING_CONTEXT_PATTERNS):
+            continue
+        if contains_any_pattern(combined, RESOURCE_TELEMETRY_REAL_SCHEDULING_NEGATED_PATTERNS):
+            continue
+        if contains_any_pattern(combined, RESOURCE_TELEMETRY_NEGATED_PATTERNS):
+            continue
+        if has_ui_copy_context and contains_any_pattern(current, RESOURCE_TELEMETRY_AMBIGUOUS_COPY_LABEL_PATTERNS):
+            continue
+        if has_ui_copy_context and contains_any_pattern(following, RESOURCE_TELEMETRY_AMBIGUOUS_COPY_LABEL_PATTERNS):
+            continue
+        has_actor_then_failure = contains_any_pattern(current, actor_patterns) and contains_any_pattern(
+            current,
+            [r"\bfailed\b", r"\bblocked\b", r"\bdeferred\b", r"\bstopped\b", r"\bpaused\b", r"\b차단\b", r"\b실패\b"],
+        )
+        has_quota_condition = contains_any_pattern(following, quota_patterns) and contains_any_pattern(
+            following,
+            [
+                r"\b(?:reached|hit|exceeded|exhausted)\b",
+                r"\bblocked\b",
+                r"\bquota\s+blocked\b",
+                r"\b사용량\b",
+                r"\b한도\b",
+                r"\b차단\b",
+            ],
+        )
+        if has_actor_then_failure and has_quota_condition:
+            return True
+        has_quota_condition_first = contains_any_pattern(current, quota_patterns) and contains_any_pattern(
+            current,
+            [
+                r"\b(?:reached|hit|exceeded|exhausted)\b",
+                r"\bblocked\b",
+                r"\bquota\s+blocked\b",
+                r"\b사용량\b",
+                r"\b한도\b",
+                r"\b차단\b",
+            ],
+        )
+        has_actor_failure_after = contains_any_pattern(following, actor_patterns) and contains_any_pattern(
+            following,
+            [r"\bfailed\b", r"\bblocked\b", r"\bdeferred\b", r"\bstopped\b", r"\bpaused\b", r"\b차단\b", r"\b실패\b"],
+        )
+        if has_quota_condition_first and has_actor_failure_after:
+            return True
+    return False
+
+
+def split_scheduling_signal_segments(value: str) -> list[str]:
+    return [segment for segment, _separator in split_scheduling_signal_segment_records(value)]
+
+
+def split_scheduling_signal_segment_records(value: str) -> list[tuple[str, str]]:
+    segments: list[tuple[str, str]] = []
+    for major in re.split(r"[.;|\n]+", value):
+        major = clean_value(major.lower())
+        if not major:
+            continue
+        position = 0
+        for match in re.finditer(r"\s*(,|:|=|\s+-\s+|\bbut\b|\bhowever\b|\bthen\b|\band\b)\s*", major):
+            segment = clean_value(major[position : match.start()])
+            if segment:
+                segments.append((segment, clean_value(match.group(1))))
+            position = match.end()
+        segment = clean_value(major[position:])
+        if segment:
+            segments.append((segment, ""))
+    return segments
+
+
+def doc_or_copy_prefixed_segment_indexes(segment_records: list[tuple[str, str]]) -> set[int]:
+    suppressed: set[int] = set()
+    for index, (segment, separator) in enumerate(segment_records):
+        if separator in {":", "=", "-"} and contains_any_pattern(
+            segment,
+            RESOURCE_TELEMETRY_DOC_OR_COPY_PREFIX_SEGMENT_PATTERNS,
+        ):
+            suppressed.add(index)
+            if index + 1 < len(segment_records):
+                suppressed.add(index + 1)
+    return suppressed
 
 
 def extract_consensus_refs(evidence: object) -> list[str]:
     text = clean_value(str(evidence))
-    match = re.search(r"refs=([^\n]+)", text, flags=re.IGNORECASE)
+    match = re.search(r"(?:^|[\s;,])refs=([^\n]+)", text, flags=re.IGNORECASE)
     if not match:
         return []
     raw_refs = match.group(1).strip()
@@ -1523,6 +2481,266 @@ def extract_artifact_field(text: str, key: str) -> str:
     return ""
 
 
+def extract_artifact_field_values(text: str, key: str) -> list[str]:
+    patterns = [
+        rf"^\s*(?:-\s*)?`?{re.escape(key)}`?\s*=\s*(.+)$",
+        rf"^\s*(?:-\s*)?`?{re.escape(key)}`?\s*:\s*(.+)$",
+    ]
+    values: list[str] = []
+    for pattern in patterns:
+        values.extend(
+            clean_value(match.group(1))
+            for match in re.finditer(pattern, text, flags=re.IGNORECASE | re.MULTILINE)
+        )
+    return values
+
+
+def artifact_alias_values(text: str, keys: tuple[str, ...]) -> list[str]:
+    values: list[str] = []
+    for key in keys:
+        values.extend(value for value in extract_artifact_field_values(text, key) if not is_noneish(value))
+    return values
+
+
+def artifact_alias_values_are_allowed(text: str, keys: tuple[str, ...], allowed: set[str]) -> bool:
+    values = [value.lower() for value in artifact_alias_values(text, keys)]
+    if not values or not all(value in allowed for value in values):
+        return False
+    equivalence = {
+        "allow": "positive",
+        "pass": "positive",
+        "approve": "positive",
+        "approved": "positive",
+        "merged": "positive",
+        "deny": "negative",
+        "fail": "negative",
+        "failed": "negative",
+        "reject": "negative",
+        "rejected": "negative",
+        "block": "negative",
+        "blocked": "negative",
+        "ambiguous": "ambiguous",
+        "unclear": "ambiguous",
+    }
+    classes = {equivalence.get(value, value) for value in values}
+    return len(classes) == 1
+
+
+def has_duplicate_artifact_field(text: str, key: str) -> bool:
+    pattern = rf"^\s*(?:-\s*)?`?{re.escape(key)}`?\s*(?:=|:)\s*.+$"
+    return len(re.findall(pattern, text, flags=re.IGNORECASE | re.MULTILINE)) > 1
+
+
+def has_duplicate_artifact_fields(text: str, keys: list[str] | tuple[str, ...]) -> bool:
+    return any(has_duplicate_artifact_field(text, key) for key in keys)
+
+
+CRITICAL_PROOF_ARTIFACT_FIELDS = (
+    "phase",
+    "agent_role",
+    "challenge_review_mode",
+    "vote",
+    "agent_id",
+    "viewpoint",
+    "coverage_viewpoints",
+    "challenge_round_id",
+    "challenge_cycle_id",
+    "closeout_round_id",
+    "subject_digest",
+    "source_ref",
+    "source_digest",
+    "authority_record_ref",
+    "authority_revision",
+    "authority_epoch",
+    "adapter_manifest_ref",
+    "adapter_effective_config_digest",
+    "completion_subject_type",
+    "completion_subject_digest",
+    "stage_graph_digest",
+    "challenge_cycle_ref",
+    "challenge_cycle_digest_set",
+    "context_mode",
+    "authority_basis",
+    "source_requirements_reconstructed",
+    "claim_files_trust",
+    "repo_inspection",
+    "audit_gap_count",
+    "scope_verdict",
+    "route_context",
+    "loaded_policy_refs",
+    "policy_ref_digests",
+    "policy_coverage_verdict",
+    "model_policy",
+    "resolved_model_slug",
+    "resolved_reasoning_effort",
+    "model_resolution_basis_ref",
+    "spawn_model_binding",
+    "spawn_tool_args_model",
+    "spawn_tool_args_reasoning_effort",
+    "spawn_tool_call_ref",
+    "freshness_status",
+)
+
+
+CRITICAL_DISPATCH_ARTIFACT_FIELDS = (
+    "dispatch_receipt_version",
+    "phase",
+    "agent_role",
+    "challenge_review_mode",
+    "agent_id",
+    "viewpoint",
+    "challenge_round_id",
+    "challenge_cycle_id",
+    "closeout_round_id",
+    "source_ref",
+    "source_digest",
+    "context_mode",
+    "authority_basis",
+    "full_history_fork",
+    "route_context",
+    "loaded_policy_refs",
+    "policy_ref_digests",
+    "policy_coverage_verdict",
+    "model_policy",
+    "model_resolution_basis_ref",
+    "spawn_model_binding",
+    "spawn_tool_args_model",
+    "spawn_tool_args_reasoning_effort",
+    "authority_record_ref",
+    "authority_revision_at_dispatch",
+    "authority_epoch_at_dispatch",
+)
+
+
+CRITICAL_RESEARCH_ARTIFACT_FIELDS = (
+    "phase",
+    "agent_role",
+    "agent_id",
+    "research_lane",
+    "research_cycle_id",
+    "vote",
+    "verdict",
+    "source_ref",
+    "source_digest",
+    "authority_revision_at_dispatch",
+    "authority_epoch_at_dispatch",
+    "model_policy",
+    "resolved_model_slug",
+    "resolved_reasoning_effort",
+    "model_resolution_basis_ref",
+    "spawn_model_binding",
+    "spawn_tool_args_model",
+    "spawn_tool_args_reasoning_effort",
+    "spawn_tool_call_ref",
+)
+
+
+CRITICAL_RESEARCH_DISPATCH_FIELDS = (
+    "dispatch_receipt_version",
+    "phase",
+    "agent_role",
+    "agent_id",
+    "research_lane",
+    "research_cycle_id",
+    "source_ref",
+    "source_digest",
+    "authority_revision_at_dispatch",
+    "authority_epoch_at_dispatch",
+    "model_policy",
+    "model_resolution_basis_ref",
+    "spawn_model_binding",
+    "spawn_tool_args_model",
+    "spawn_tool_args_reasoning_effort",
+)
+
+
+CRITICAL_VERIFICATION_ARTIFACT_FIELDS = (
+    "agent_role",
+    "verification_agent_mode",
+    "agent_id",
+    "verification_status",
+    "verification_result",
+    "verification_command",
+    "verification_ref",
+    "evidence_ref",
+    "source_digest",
+    "stage_graph_digest",
+    "authority_record_ref",
+    "authority_revision",
+    "authority_epoch",
+    "adapter_manifest_ref",
+    "adapter_effective_config_digest",
+    "model_policy",
+    "resolved_model_slug",
+    "resolved_reasoning_effort",
+    "spawn_model_binding",
+    "spawn_tool_args_model",
+    "spawn_tool_args_reasoning_effort",
+    "spawn_tool_call_ref",
+)
+
+
+CRITICAL_FINAL_INLINE_FIELDS = (
+    "allow_count",
+    "deny_count",
+    "ambiguous_count",
+    "missing_count",
+    "challenge_round_id",
+    "closeout_round_id",
+    "agent_role",
+    "challenge_review_mode",
+    "subject_digest",
+    "source_ref",
+    "source_digest",
+    "authority_record_ref",
+    "authority_revision",
+    "authority_epoch",
+    "adapter_manifest_ref",
+    "adapter_effective_config_digest",
+    "completion_subject_type",
+    "completion_subject_digest",
+    "stage_graph_digest",
+    "challenge_cycle_ref",
+    "challenge_cycle_digest_set",
+    "context_mode",
+    "authority_basis",
+    "source_requirements_reconstructed",
+    "claim_files_trust",
+    "repo_inspection",
+    "audit_gap_count",
+    "scope_verdict",
+    "route_context",
+    "loaded_policy_refs",
+    "policy_ref_digests",
+    "policy_coverage_verdict",
+    "viewpoint_set",
+    "coverage_viewpoint_set",
+    "model_policy",
+    "resolved_model_slug",
+    "resolved_reasoning_effort",
+    "spawn_model_binding",
+)
+
+
+def inline_token_values(text: str, key: str) -> list[str]:
+    return [
+        clean_value(match.group(1))
+        for match in re.finditer(rf"(?:^|[\s;,]){re.escape(key)}=([^\s;,\n]+)", text, flags=re.IGNORECASE)
+    ]
+
+
+def inline_token_is_unique(text: str, key: str) -> bool:
+    return len(inline_token_values(text, key)) <= 1
+
+
+def has_conflicting_inline_tokens(text: str, keys: list[str] | tuple[str, ...]) -> bool:
+    for key in keys:
+        values = inline_token_values(text, key)
+        if len(values) > 1:
+            return True
+    return False
+
+
 def extract_challenge_round_id(evidence: object) -> str:
     return clean_value(extract_inline_token_value(clean_value(str(evidence)), "challenge_round_id") or "")
 
@@ -1535,6 +2753,16 @@ def extract_attempt_ref(evidence: object) -> str:
     return clean_value(extract_structured_value(clean_value(str(evidence)), "attempt_ref") or "")
 
 
+def extract_inline_count(text: str, key: str) -> int | None:
+    raw_value = extract_inline_token_value(text, key)
+    if raw_value is None:
+        return None
+    try:
+        return int(clean_value(raw_value))
+    except ValueError:
+        return None
+
+
 def extract_source_digest_token(text: str) -> str:
     return clean_value(
         extract_inline_token_value(text, "source_digest")
@@ -1543,10 +2771,32 @@ def extract_source_digest_token(text: str) -> str:
     )
 
 
+def final_policy_route_metadata_is_valid_inline(text: str, run_dir: Path) -> bool:
+    return (
+        clean_value(extract_inline_token_value(text, "route_context") or "").lower()
+        == REQUIRED_FINAL_POLICY_ROUTE_CONTEXT
+        and clean_value(extract_inline_token_value(text, "policy_coverage_verdict") or "").lower()
+        == REQUIRED_FINAL_POLICY_COVERAGE_VERDICT
+        and policy_ref_tokens_are_complete(extract_inline_token_value(text, "loaded_policy_refs") or "", run_dir)
+        and policy_ref_digests_are_valid(extract_inline_token_value(text, "policy_ref_digests") or "", run_dir)
+    )
+
+
+def final_policy_route_metadata_is_valid_artifact(text: str, run_dir: Path) -> bool:
+    return (
+        extract_artifact_field(text, "route_context").lower() == REQUIRED_FINAL_POLICY_ROUTE_CONTEXT
+        and extract_artifact_field(text, "policy_coverage_verdict").lower() == REQUIRED_FINAL_POLICY_COVERAGE_VERDICT
+        and policy_ref_tokens_are_complete(extract_artifact_field(text, "loaded_policy_refs"), run_dir)
+        and policy_ref_digests_are_valid(extract_artifact_field(text, "policy_ref_digests"), run_dir)
+    )
+
+
 def final_audit_evidence_is_valid(evidence: object, run_dir: Path) -> bool:
     text = clean_value(str(evidence)).lower()
     source_digest = compute_source_digest(run_dir)
     if not source_digest:
+        return False
+    if not final_policy_route_metadata_is_valid_inline(text, run_dir):
         return False
 
     required_tokens = {
@@ -1574,6 +2824,8 @@ def final_audit_artifact_is_valid(text: str, run_dir: Path, required_phase: str)
     source_digest = compute_source_digest(run_dir)
     if not source_digest:
         return False
+    if not final_policy_route_metadata_is_valid_artifact(text, run_dir):
+        return False
 
     required_fields = {
         "source_ref": REQUIRED_SOURCE_REF,
@@ -1600,20 +2852,94 @@ def final_audit_artifact_is_valid(text: str, run_dir: Path, required_phase: str)
     return True
 
 
+def challenge_attempt_core_evidence_is_valid(evidence: object, run_dir: Path, required_phase: str) -> bool:
+    text = clean_value(str(evidence)).lower()
+    source_digest = compute_source_digest(run_dir)
+    if not source_digest:
+        return False
+    if not final_policy_route_metadata_is_valid_inline(text, run_dir):
+        return False
+
+    required_tokens = {
+        "source_ref": REQUIRED_SOURCE_REF,
+        "source_digest": source_digest,
+        "context_mode": REQUIRED_FINAL_AUDIT_CONTEXT_MODE,
+        "authority_basis": REQUIRED_FINAL_AUDIT_AUTHORITY_BASIS,
+        "source_requirements_reconstructed": REQUIRED_FINAL_AUDIT_REQUIREMENTS_RECONSTRUCTED,
+        "claim_files_trust": REQUIRED_FINAL_AUDIT_CLAIM_FILES_TRUST,
+        "repo_inspection": REQUIRED_FINAL_AUDIT_REPO_INSPECTION,
+    }
+    for key, expected in required_tokens.items():
+        if clean_value(extract_inline_token_value(text, key) or "").lower() != expected.lower():
+            return False
+
+    required_challenge_mode = REQUIRED_FINAL_CHALLENGE_MODES.get(required_phase)
+    if not required_challenge_mode:
+        return False
+    required_challenge_tokens = {
+        "agent_role": REQUIRED_FINAL_CHALLENGE_AGENT_ROLE,
+        "challenge_review_mode": required_challenge_mode,
+        "model_policy": REQUIRED_DELEGATED_MODEL_POLICY,
+        "spawn_model_binding": REQUIRED_DELEGATED_MODEL_BINDING,
+    }
+    for key, expected in required_challenge_tokens.items():
+        if clean_value(extract_inline_token_value(text, key) or "").lower() != expected.lower():
+            return False
+
+    return True
+
+
+def challenge_attempt_core_artifact_is_valid(text: str, run_dir: Path) -> bool:
+    source_digest = compute_source_digest(run_dir)
+    if not source_digest:
+        return False
+    if not final_policy_route_metadata_is_valid_artifact(text, run_dir):
+        return False
+
+    required_fields = {
+        "source_ref": REQUIRED_SOURCE_REF,
+        "source_digest": source_digest,
+        "context_mode": REQUIRED_FINAL_AUDIT_CONTEXT_MODE,
+        "authority_basis": REQUIRED_FINAL_AUDIT_AUTHORITY_BASIS,
+        "source_requirements_reconstructed": REQUIRED_FINAL_AUDIT_REQUIREMENTS_RECONSTRUCTED,
+        "claim_files_trust": REQUIRED_FINAL_AUDIT_CLAIM_FILES_TRUST,
+        "repo_inspection": REQUIRED_FINAL_AUDIT_REPO_INSPECTION,
+    }
+    for key, expected in required_fields.items():
+        if not artifact_field_equals(text, key, expected):
+            return False
+
+    return True
+
+
 def dispatch_receipt_is_valid(
     path: Path,
     *,
+    run_dir: Path,
     required_phase: str,
     challenge_round_id: str,
     closeout_round_id: str,
     source_digest: str,
     viewpoint: str,
     agent_id: str,
+    expected_model_slug: str,
+    expected_reasoning_effort: str,
+    expected_challenge_cycle_id: str | None = None,
+    expected_authority_record_ref: str | None = None,
+    expected_authority_revision: str | None = None,
+    expected_authority_epoch: str | None = None,
 ) -> bool:
     text = path.read_text(encoding="utf-8", errors="ignore")
+    if has_duplicate_artifact_fields(text, CRITICAL_DISPATCH_ARTIFACT_FIELDS):
+        return False
+    required_challenge_mode = REQUIRED_FINAL_CHALLENGE_MODES.get(required_phase)
+    if not required_challenge_mode:
+        return False
     required_fields = {
         "dispatch_receipt_version": "v1",
         "phase": required_phase,
+        "agent_role": REQUIRED_FINAL_CHALLENGE_AGENT_ROLE,
+        "challenge_review_mode": required_challenge_mode,
         "agent_id": agent_id,
         "viewpoint": viewpoint,
         "challenge_round_id": challenge_round_id,
@@ -1623,13 +2949,32 @@ def dispatch_receipt_is_valid(
         "context_mode": REQUIRED_FINAL_AUDIT_CONTEXT_MODE,
         "authority_basis": REQUIRED_FINAL_AUDIT_AUTHORITY_BASIS,
         "full_history_fork": "false",
+        "model_policy": REQUIRED_DELEGATED_MODEL_POLICY,
         "spawn_model_binding": REQUIRED_DELEGATED_MODEL_BINDING,
-        "spawn_tool_args_model": REQUIRED_DELEGATED_MODEL_SLUG,
-        "spawn_tool_args_reasoning_effort": REQUIRED_DELEGATED_REASONING_EFFORT,
     }
     for key, expected in required_fields.items():
         if not artifact_field_equals(text, key, expected):
             return False
+    optional_fields = {
+        "challenge_cycle_id": expected_challenge_cycle_id,
+        "authority_record_ref": expected_authority_record_ref,
+        "authority_revision_at_dispatch": expected_authority_revision,
+        "authority_epoch_at_dispatch": expected_authority_epoch,
+    }
+    for key, expected in optional_fields.items():
+        if expected is not None and not artifact_field_equals(text, key, expected):
+            return False
+    if not final_policy_route_metadata_is_valid_artifact(text, run_dir):
+        return False
+    if is_placeholder_reference(extract_artifact_field(text, "model_resolution_basis_ref")):
+        return False
+    if clean_value(extract_artifact_field(text, "spawn_tool_args_model")).lower() != clean_value(expected_model_slug).lower():
+        return False
+    if (
+        clean_value(extract_artifact_field(text, "spawn_tool_args_reasoning_effort")).lower()
+        != clean_value(expected_reasoning_effort).lower()
+    ):
+        return False
     return True
 
 
@@ -1650,7 +2995,7 @@ def challenge_round_id_seen_in_receipts(run_dir: Path, round_id: str) -> bool:
 def closeout_round_id_seen_in_receipts(run_dir: Path, round_id: str) -> bool:
     if not round_id:
         return False
-    for dirname in ("closeout-receipts", "status-receipts"):
+    for dirname in ("closeout-receipts",):
         receipts_dir = run_dir / dirname
         if not receipts_dir.exists():
             continue
@@ -1690,18 +3035,27 @@ def has_unanimous_codex_proof(
     text = clean_value(str(evidence)).lower()
     if not text:
         return False
+    if has_conflicting_inline_tokens(text, CRITICAL_FINAL_INLINE_FIELDS):
+        return False
+    required_challenge_mode = REQUIRED_FINAL_CHALLENGE_MODES.get(required_phase)
+    if not required_challenge_mode:
+        return False
 
     required_tokens = [
         f"allow_count={REQUIRED_DELEGATED_AGENT_COUNT}",
         "deny_count=0",
         "ambiguous_count=0",
         "missing_count=0",
+        f"agent_role={REQUIRED_FINAL_CHALLENGE_AGENT_ROLE}",
+        f"challenge_review_mode={required_challenge_mode}",
+        f"top_model_lane_min={MIN_TOP_MODEL_LANES}",
     ]
     if not all(token in text for token in required_tokens):
         return False
 
-    viewpoint_set = extract_pipe_value_set(extract_inline_token_value(text, "viewpoint_set"))
-    if viewpoint_set != REQUIRED_STOP_VIEWPOINTS:
+    if not pipe_value_set_is_exact(extract_inline_token_value(text, "viewpoint_set"), REQUIRED_STOP_LANES):
+        return False
+    if not pipe_value_set_is_exact(extract_inline_token_value(text, "coverage_viewpoint_set"), REQUIRED_STOP_VIEWPOINTS):
         return False
 
     challenge_round_id = extract_inline_token_value(text, "challenge_round_id")
@@ -1716,13 +3070,13 @@ def has_unanimous_codex_proof(
     if clean_value(subject_digest).lower() != compute_subject_digest(run_dir).lower():
         return False
 
-    if extract_inline_token_value(text, "model_policy") != "resolved_strongest_hard_pin":
+    if extract_inline_token_value(text, "model_policy") != REQUIRED_DELEGATED_MODEL_POLICY:
         return False
-    if clean_value(extract_inline_token_value(text, "resolved_model_slug") or "").lower() != REQUIRED_DELEGATED_MODEL_SLUG.lower():
-        return False
-    if (
-        clean_value(extract_inline_token_value(text, "resolved_reasoning_effort") or "").lower()
-        != REQUIRED_DELEGATED_REASONING_EFFORT.lower()
+    inline_model_slug = clean_value(extract_inline_token_value(text, "resolved_model_slug") or "")
+    inline_reasoning_effort = clean_value(extract_inline_token_value(text, "resolved_reasoning_effort") or "")
+    if (inline_model_slug or inline_reasoning_effort) and not delegated_model_is_allowed(
+        inline_model_slug,
+        inline_reasoning_effort,
     ):
         return False
     if extract_inline_token_value(text, "spawn_model_binding") != REQUIRED_DELEGATED_MODEL_BINDING:
@@ -1736,28 +3090,30 @@ def has_unanimous_codex_proof(
 
     seen_agent_ids: set[str] = set()
     seen_viewpoints: set[str] = set()
+    covered_viewpoints: set[str] = set()
+    top_model_lane_count = 0
+    top_xhigh_lane_count = 0
+    model_mix_counts: dict[tuple[str, str], int] = {}
     current_authority_mtime = latest_authority_mtime(run_dir)
     source_digest = compute_source_digest(run_dir)
 
     for ref in refs:
-        ref_path = Path(ref)
-        if ref_path.is_absolute():
-            ref_path = ref_path.resolve()
-        else:
-            ref_path = (run_dir / ref_path).resolve()
-        try:
-            ref_path.relative_to(run_dir.resolve())
-        except ValueError:
-            return False
-        if not ref_path.exists() or not ref_path.is_file():
+        ref_path = resolve_artifact_ref(ref, run_dir)
+        if ref_path is None:
             return False
         if current_authority_mtime and ref_path.stat().st_mtime < current_authority_mtime:
             return False
 
         artifact_text = ref_path.read_text(encoding="utf-8", errors="ignore")
+        if has_duplicate_artifact_fields(artifact_text, CRITICAL_PROOF_ARTIFACT_FIELDS):
+            return False
         if extract_artifact_field(artifact_text, "phase").lower() != required_phase:
             return False
-        if extract_artifact_field(artifact_text, "vote").lower() != "allow":
+        if extract_artifact_field(artifact_text, "agent_role").lower() != REQUIRED_FINAL_CHALLENGE_AGENT_ROLE:
+            return False
+        if extract_artifact_field(artifact_text, "challenge_review_mode").lower() != required_challenge_mode:
+            return False
+        if not artifact_alias_values_are_allowed(artifact_text, ("vote", "verdict"), {"allow"}):
             return False
         if not final_audit_artifact_is_valid(artifact_text, run_dir, required_phase):
             return False
@@ -1768,9 +3124,18 @@ def has_unanimous_codex_proof(
         seen_agent_ids.add(agent_id)
 
         viewpoint = extract_artifact_field(artifact_text, "viewpoint").lower()
-        if viewpoint not in REQUIRED_STOP_VIEWPOINTS or viewpoint in seen_viewpoints:
+        if viewpoint not in REQUIRED_STOP_LANES or viewpoint in seen_viewpoints:
             return False
         seen_viewpoints.add(viewpoint)
+        expected_lane_coverage = REQUIRED_STOP_LANE_COVERAGE.get(viewpoint, set())
+        coverage_text = extract_artifact_field(artifact_text, "coverage_viewpoints") or extract_artifact_field(
+            artifact_text,
+            "covered_viewpoints",
+        )
+        if not pipe_value_set_is_exact(coverage_text, expected_lane_coverage):
+            return False
+        lane_coverage = extract_pipe_value_set(coverage_text)
+        covered_viewpoints.update(lane_coverage)
 
         artifact_round_id = (
             extract_artifact_field(artifact_text, "challenge_round_id")
@@ -1788,44 +3153,43 @@ def has_unanimous_codex_proof(
         if extract_artifact_field(artifact_text, "subject_digest").lower() != clean_value(subject_digest).lower():
             return False
 
-        if extract_artifact_field(artifact_text, "model_policy").lower() != "resolved_strongest_hard_pin":
+        if extract_artifact_field(artifact_text, "model_policy").lower() != REQUIRED_DELEGATED_MODEL_POLICY:
             return False
-        if (
-            clean_value(extract_artifact_field(artifact_text, "resolved_model_slug")).lower()
-            != REQUIRED_DELEGATED_MODEL_SLUG.lower()
-        ):
+        artifact_model_slug = clean_value(extract_artifact_field(artifact_text, "resolved_model_slug"))
+        artifact_reasoning_effort = clean_value(extract_artifact_field(artifact_text, "resolved_reasoning_effort"))
+        spawn_model_slug = clean_value(extract_artifact_field(artifact_text, "spawn_tool_args_model"))
+        spawn_reasoning_effort = clean_value(extract_artifact_field(artifact_text, "spawn_tool_args_reasoning_effort"))
+        if not delegated_model_is_allowed(artifact_model_slug, artifact_reasoning_effort):
             return False
-        if (
-            clean_value(extract_artifact_field(artifact_text, "resolved_reasoning_effort")).lower()
-            != REQUIRED_DELEGATED_REASONING_EFFORT.lower()
-        ):
+        if spawn_model_slug.lower() != artifact_model_slug.lower():
             return False
-        if not extract_artifact_field(artifact_text, "model_resolution_basis_ref"):
+        if spawn_reasoning_effort.lower() != artifact_reasoning_effort.lower():
+            return False
+        if delegated_model_is_top(artifact_model_slug, artifact_reasoning_effort):
+            top_model_lane_count += 1
+        if delegated_model_is_top_xhigh(artifact_model_slug, artifact_reasoning_effort):
+            top_xhigh_lane_count += 1
+        lane_model_key = delegated_lane_model_key(artifact_model_slug, artifact_reasoning_effort)
+        model_mix_counts[lane_model_key] = model_mix_counts.get(lane_model_key, 0) + 1
+        if is_placeholder_reference(extract_artifact_field(artifact_text, "model_resolution_basis_ref")):
             return False
         if extract_artifact_field(artifact_text, "spawn_model_binding").lower() != REQUIRED_DELEGATED_MODEL_BINDING:
-            return False
-        if (
-            clean_value(extract_artifact_field(artifact_text, "spawn_tool_args_model")).lower()
-            != REQUIRED_DELEGATED_MODEL_SLUG.lower()
-        ):
-            return False
-        if (
-            clean_value(extract_artifact_field(artifact_text, "spawn_tool_args_reasoning_effort")).lower()
-            != REQUIRED_DELEGATED_REASONING_EFFORT.lower()
-        ):
             return False
         spawn_tool_call_ref = extract_artifact_field(artifact_text, "spawn_tool_call_ref")
         if is_placeholder_reference(spawn_tool_call_ref):
             return False
-        dispatch_path = resolve_run_scoped_ref(spawn_tool_call_ref, run_dir)
+        dispatch_path = resolve_artifact_ref(spawn_tool_call_ref, run_dir)
         if dispatch_path is None or not dispatch_receipt_is_valid(
             dispatch_path,
+            run_dir=run_dir,
             required_phase=required_phase,
             challenge_round_id=challenge_round_id,
             closeout_round_id=closeout_round_id,
             source_digest=source_digest,
             viewpoint=viewpoint,
             agent_id=agent_id,
+            expected_model_slug=artifact_model_slug,
+            expected_reasoning_effort=artifact_reasoning_effort,
         ):
             return False
 
@@ -1836,11 +3200,213 @@ def has_unanimous_codex_proof(
         if freshness_status not in FRESH_PROOF_STATUSES:
             return False
 
-    return seen_viewpoints == REQUIRED_STOP_VIEWPOINTS
+    return (
+        seen_viewpoints == REQUIRED_STOP_LANES
+        and covered_viewpoints == REQUIRED_STOP_VIEWPOINTS
+        and top_model_lane_count >= MIN_TOP_MODEL_LANES
+        and top_xhigh_lane_count >= MIN_TOP_XHIGH_LANES
+        and model_mix_counts == REQUIRED_DELEGATED_MODEL_MIX
+    )
+
+
+def has_codex_challenge_attempt(
+    evidence: object,
+    run_dir: Path,
+    required_phase: str,
+    closeout_round_id: str,
+) -> bool:
+    text = clean_value(str(evidence)).lower()
+    if not text:
+        return False
+    if has_conflicting_inline_tokens(text, CRITICAL_FINAL_INLINE_FIELDS):
+        return False
+    required_challenge_mode = REQUIRED_FINAL_CHALLENGE_MODES.get(required_phase)
+    if not required_challenge_mode:
+        return False
+    if not challenge_attempt_core_evidence_is_valid(evidence, run_dir, required_phase):
+        return False
+
+    challenge_round_id = extract_inline_token_value(text, "challenge_round_id")
+    if challenge_round_id is None or is_placeholder_reference(challenge_round_id):
+        return False
+    if extract_closeout_round_id(evidence).lower() != closeout_round_id.lower():
+        return False
+
+    if not pipe_value_set_is_exact(extract_inline_token_value(text, "viewpoint_set"), REQUIRED_STOP_LANES):
+        return False
+    if not pipe_value_set_is_exact(extract_inline_token_value(text, "coverage_viewpoint_set"), REQUIRED_STOP_VIEWPOINTS):
+        return False
+
+    allow_count = extract_inline_count(text, "allow_count")
+    deny_count = extract_inline_count(text, "deny_count")
+    ambiguous_count = extract_inline_count(text, "ambiguous_count")
+    missing_count = extract_inline_count(text, "missing_count")
+    if None in {allow_count, deny_count, ambiguous_count, missing_count}:
+        return False
+    if allow_count + deny_count + ambiguous_count + missing_count != REQUIRED_DELEGATED_AGENT_COUNT:
+        return False
+    if missing_count != 0:
+        return False
+
+    subject_digest = extract_inline_token_value(text, "subject_digest")
+    if subject_digest is None or is_placeholder_reference(subject_digest):
+        return False
+    if clean_value(subject_digest).lower() != compute_subject_digest(run_dir).lower():
+        return False
+
+    inline_model_slug = clean_value(extract_inline_token_value(text, "resolved_model_slug") or "")
+    inline_reasoning_effort = clean_value(extract_inline_token_value(text, "resolved_reasoning_effort") or "")
+    if (inline_model_slug or inline_reasoning_effort) and not delegated_model_is_allowed(
+        inline_model_slug,
+        inline_reasoning_effort,
+    ):
+        return False
+
+    refs = extract_consensus_refs(evidence)
+    if len(refs) != REQUIRED_DELEGATED_AGENT_COUNT or len(set(refs)) != REQUIRED_DELEGATED_AGENT_COUNT:
+        return False
+
+    seen_agent_ids: set[str] = set()
+    seen_viewpoints: set[str] = set()
+    covered_viewpoints: set[str] = set()
+    top_model_lane_count = 0
+    top_xhigh_lane_count = 0
+    model_mix_counts: dict[tuple[str, str], int] = {}
+    artifact_vote_counts = {"allow": 0, "deny": 0, "ambiguous": 0}
+    current_authority_mtime = latest_authority_mtime(run_dir)
+    source_digest = compute_source_digest(run_dir)
+
+    for ref in refs:
+        ref_path = resolve_artifact_ref(ref, run_dir)
+        if ref_path is None:
+            return False
+        if current_authority_mtime and ref_path.stat().st_mtime < current_authority_mtime:
+            return False
+
+        artifact_text = ref_path.read_text(encoding="utf-8", errors="ignore")
+        if has_duplicate_artifact_fields(artifact_text, CRITICAL_PROOF_ARTIFACT_FIELDS):
+            return False
+        if extract_artifact_field(artifact_text, "phase").lower() != required_phase:
+            return False
+        if extract_artifact_field(artifact_text, "agent_role").lower() != REQUIRED_FINAL_CHALLENGE_AGENT_ROLE:
+            return False
+        if extract_artifact_field(artifact_text, "challenge_review_mode").lower() != required_challenge_mode:
+            return False
+        if not challenge_attempt_core_artifact_is_valid(artifact_text, run_dir):
+            return False
+
+        if not artifact_alias_values_are_allowed(artifact_text, ("vote", "verdict"), set(artifact_vote_counts)):
+            return False
+        vote = extract_artifact_field(artifact_text, "vote").lower()
+        if vote not in artifact_vote_counts:
+            return False
+        artifact_vote_counts[vote] += 1
+
+        agent_id = extract_artifact_field(artifact_text, "agent_id").lower()
+        if not agent_id or agent_id in seen_agent_ids:
+            return False
+        seen_agent_ids.add(agent_id)
+
+        viewpoint = extract_artifact_field(artifact_text, "viewpoint").lower()
+        if viewpoint not in REQUIRED_STOP_LANES or viewpoint in seen_viewpoints:
+            return False
+        seen_viewpoints.add(viewpoint)
+        expected_lane_coverage = REQUIRED_STOP_LANE_COVERAGE.get(viewpoint, set())
+        coverage_text = extract_artifact_field(artifact_text, "coverage_viewpoints") or extract_artifact_field(
+            artifact_text,
+            "covered_viewpoints",
+        )
+        if not pipe_value_set_is_exact(coverage_text, expected_lane_coverage):
+            return False
+        lane_coverage = extract_pipe_value_set(coverage_text)
+        covered_viewpoints.update(lane_coverage)
+
+        artifact_round_id = (
+            extract_artifact_field(artifact_text, "challenge_round_id")
+            or extract_artifact_field(artifact_text, "freshness_ref")
+        )
+        if clean_value(artifact_round_id).lower() != challenge_round_id.lower():
+            return False
+        artifact_closeout_round_id = (
+            extract_artifact_field(artifact_text, "closeout_round_id")
+            or extract_artifact_field(artifact_text, "closeout_ref")
+            or extract_artifact_field(artifact_text, "freshness_anchor")
+        )
+        if clean_value(artifact_closeout_round_id).lower() != closeout_round_id.lower():
+            return False
+        if extract_artifact_field(artifact_text, "subject_digest").lower() != clean_value(subject_digest).lower():
+            return False
+
+        if extract_artifact_field(artifact_text, "model_policy").lower() != REQUIRED_DELEGATED_MODEL_POLICY:
+            return False
+        artifact_model_slug = clean_value(extract_artifact_field(artifact_text, "resolved_model_slug"))
+        artifact_reasoning_effort = clean_value(extract_artifact_field(artifact_text, "resolved_reasoning_effort"))
+        spawn_model_slug = clean_value(extract_artifact_field(artifact_text, "spawn_tool_args_model"))
+        spawn_reasoning_effort = clean_value(extract_artifact_field(artifact_text, "spawn_tool_args_reasoning_effort"))
+        if not delegated_model_is_allowed(artifact_model_slug, artifact_reasoning_effort):
+            return False
+        if spawn_model_slug.lower() != artifact_model_slug.lower():
+            return False
+        if spawn_reasoning_effort.lower() != artifact_reasoning_effort.lower():
+            return False
+        if delegated_model_is_top(artifact_model_slug, artifact_reasoning_effort):
+            top_model_lane_count += 1
+        if delegated_model_is_top_xhigh(artifact_model_slug, artifact_reasoning_effort):
+            top_xhigh_lane_count += 1
+        lane_model_key = delegated_lane_model_key(artifact_model_slug, artifact_reasoning_effort)
+        model_mix_counts[lane_model_key] = model_mix_counts.get(lane_model_key, 0) + 1
+        if is_placeholder_reference(extract_artifact_field(artifact_text, "model_resolution_basis_ref")):
+            return False
+        if extract_artifact_field(artifact_text, "spawn_model_binding").lower() != REQUIRED_DELEGATED_MODEL_BINDING:
+            return False
+        spawn_tool_call_ref = extract_artifact_field(artifact_text, "spawn_tool_call_ref")
+        if is_placeholder_reference(spawn_tool_call_ref):
+            return False
+        dispatch_path = resolve_artifact_ref(spawn_tool_call_ref, run_dir)
+        if dispatch_path is None or not dispatch_receipt_is_valid(
+            dispatch_path,
+            run_dir=run_dir,
+            required_phase=required_phase,
+            challenge_round_id=challenge_round_id,
+            closeout_round_id=closeout_round_id,
+            source_digest=source_digest,
+            viewpoint=viewpoint,
+            agent_id=agent_id,
+            expected_model_slug=artifact_model_slug,
+            expected_reasoning_effort=artifact_reasoning_effort,
+        ):
+            return False
+
+        freshness_status = (
+            extract_artifact_field(artifact_text, "freshness_status")
+            or extract_artifact_field(artifact_text, "freshness")
+        ).lower()
+        if freshness_status not in FRESH_PROOF_STATUSES:
+            return False
+
+    return (
+        seen_viewpoints == REQUIRED_STOP_LANES
+        and covered_viewpoints == REQUIRED_STOP_VIEWPOINTS
+        and top_model_lane_count >= MIN_TOP_MODEL_LANES
+        and top_xhigh_lane_count >= MIN_TOP_XHIGH_LANES
+        and model_mix_counts == REQUIRED_DELEGATED_MODEL_MIX
+        and artifact_vote_counts["allow"] == allow_count
+        and artifact_vote_counts["deny"] == deny_count
+        and artifact_vote_counts["ambiguous"] == ambiguous_count
+    )
 
 
 def has_stop_authorization_proof(evidence: object, run_dir: Path, closeout_round_id: str) -> bool:
     return has_unanimous_codex_proof(
+        evidence,
+        run_dir,
+        required_phase="stop_authorization",
+        closeout_round_id=closeout_round_id,
+    )
+
+
+def has_stop_authorization_challenge_attempt(evidence: object, run_dir: Path, closeout_round_id: str) -> bool:
+    return has_codex_challenge_attempt(
         evidence,
         run_dir,
         required_phase="stop_authorization",
@@ -1860,6 +3426,1595 @@ def has_goal_completion_proof(evidence: object, run_dir: Path, closeout_round_id
 def completion_candidate_points_at_challenge(*values: object) -> bool:
     combined = " ".join(clean_value(str(value)).lower() for value in values if clean_value(str(value)))
     return contains_any_pattern(combined, COMPLETION_GATE_PATTERNS)
+
+
+def requires_approval_or_no_action_challenge(fields: dict[str, object]) -> bool:
+    run_decision = clean_value(str(fields.get("run_decision", ""))).lower()
+    external_basis = clean_value(str(fields.get("external_authority_basis", ""))).lower()
+    continue_exit_status = clean_value(str(fields.get("continue_exit_status", ""))).lower()
+    turn_exit_cause = clean_value(str(fields.get("turn_exit_cause", ""))).lower()
+    local_action_text = " | ".join(
+        [
+            clean_value(str(fields.get("current_or_next_stage", ""))),
+            clean_value(str(fields.get("next_mandatory_action", ""))),
+            flatten_multivalue_text(fields.get("remaining_required_stages", "")),
+            flatten_multivalue_text(fields.get("resume_instructions", "")),
+        ]
+    )
+    combined = " | ".join(
+        [
+            clean_value(str(fields.get("current_or_next_stage", ""))),
+            clean_value(str(fields.get("next_mandatory_action", ""))),
+            flatten_multivalue_text(fields.get("remaining_required_stages", "")),
+            flatten_multivalue_text(fields.get("blocking_findings", "")),
+            clean_value(str(fields.get("pause_reason", ""))),
+            clean_value(str(fields.get("continue_exit_evidence", ""))),
+            clean_value(str(fields.get("turn_exit_evidence", ""))),
+            flatten_multivalue_text(fields.get("resume_instructions", "")),
+        ]
+    )
+    local_action_available = (
+        not contains_any_pattern(local_action_text, NO_BOUNDED_LOCAL_ACTION_PATTERNS)
+        and (
+            contains_any_pattern(local_action_text, LOCAL_EDIT_CONTINUE_PATTERNS)
+            or contains_any_pattern(local_action_text, VALIDATION_EVIDENCE_PATTERNS)
+            or contains_any_pattern(local_action_text, STRONG_CONTINUE_EXIT_PATTERNS)
+        )
+    )
+
+    if external_basis == "human_decision_required":
+        return not local_action_available
+    if run_decision in {"continue", "pause"} and contains_any_pattern(combined, APPROVAL_OR_NO_LOCAL_ACTION_CHALLENGE_PATTERNS):
+        if local_action_available and not contains_any_pattern(combined, NO_BOUNDED_LOCAL_ACTION_PATTERNS):
+            return False
+        return True
+    if run_decision == "continue" and continue_exit_status == "blocked_during_attempt" and turn_exit_cause == "blocked_during_attempt":
+        if local_action_available and not contains_any_pattern(combined, NO_BOUNDED_LOCAL_ACTION_PATTERNS):
+            return False
+        return contains_any_pattern(combined, APPROVAL_OR_NO_LOCAL_ACTION_CHALLENGE_PATTERNS)
+    return False
+
+
+def inline_token_set(value: str | None) -> set[str]:
+    return {clean_value(part).lower() for part in re.split(r"[|,]", clean_value(value or "")) if clean_value(part)}
+
+
+def inline_token_set_is_exact(value: str | None, expected: set[str]) -> bool:
+    return pipe_value_set_is_exact(value, expected)
+
+
+def strategy_dispatch_receipt_is_valid(path: Path, run_dir: Path, authority_path: Path | None = None) -> bool:
+    text = path.read_text(encoding="utf-8", errors="ignore")
+    if has_duplicate_artifact_fields(text, CRITICAL_DISPATCH_ARTIFACT_FIELDS):
+        return False
+    if not artifact_field_equals(text, "dispatch_receipt_version", "v1"):
+        return False
+    if extract_artifact_field(text, "model_policy").lower() != REQUIRED_DELEGATED_MODEL_POLICY:
+        return False
+    if extract_artifact_field(text, "spawn_model_binding").lower() != REQUIRED_DELEGATED_MODEL_BINDING:
+        return False
+    if clean_value(extract_artifact_field(text, "spawn_tool_args_model")).lower() != TOP_DELEGATED_MODEL_SLUG.lower():
+        return False
+    if (
+        clean_value(extract_artifact_field(text, "spawn_tool_args_reasoning_effort")).lower()
+        != TOP_DELEGATED_REASONING_EFFORT.lower()
+    ):
+        return False
+    resolved_model_slug = clean_value(extract_artifact_field(text, "resolved_model_slug"))
+    resolved_reasoning_effort = clean_value(extract_artifact_field(text, "resolved_reasoning_effort"))
+    if resolved_model_slug and resolved_model_slug.lower() != TOP_DELEGATED_MODEL_SLUG.lower():
+        return False
+    if resolved_reasoning_effort and resolved_reasoning_effort.lower() != TOP_DELEGATED_REASONING_EFFORT.lower():
+        return False
+    if not artifact_field_equals(text, "agent_role", REQUIRED_STRATEGY_AGENT_ROLE):
+        return False
+    if extract_artifact_field(text, "route_context").lower() == REQUIRED_FINAL_POLICY_ROUTE_CONTEXT:
+        return False
+    return artifact_binds_current_v3_snapshot(text, run_dir, authority_path=authority_path)
+
+
+def strategy_artifact_has_top_model_authority(path: Path, run_dir: Path, authority_path: Path | None = None) -> bool:
+    text = path.read_text(encoding="utf-8", errors="ignore")
+    dispatch_ref = extract_artifact_field(text, "dispatch_ref")
+    dispatch_path = resolve_artifact_ref(dispatch_ref, run_dir)
+    target_scope = record_value(authority_path, "target_scope").lower() if authority_path is not None else ""
+    requires_portability = (
+        artifact_field_equals(text, "global_skill_change", "true")
+        or target_scope in {"global_skill", "codex_skill", "agent_loop_skill"}
+    )
+    if requires_portability and not artifact_field_equals(text, "portability_classification", "global_invariant"):
+        return False
+    return (
+        artifact_field_equals(text, "agent_role", REQUIRED_STRATEGY_AGENT_ROLE)
+        and
+        artifact_field_equals(text, "plan_model_policy", "strongest_model_required")
+        and artifact_field_equals(text, "plan_model_slug", TOP_DELEGATED_MODEL_SLUG)
+        and artifact_field_equals(text, "plan_reasoning_effort", TOP_DELEGATED_REASONING_EFFORT)
+        and dispatch_path is not None
+        and strategy_dispatch_receipt_is_valid(dispatch_path, run_dir, authority_path=authority_path)
+    )
+
+
+def implementation_dispatch_receipt_is_valid(
+    path: Path,
+    *,
+    run_dir: Path,
+    challenge_review_mode: str,
+    viewpoint: str,
+    agent_id: str,
+    expected_model_slug: str,
+    expected_reasoning_effort: str,
+    authority_path: Path | None = None,
+) -> bool:
+    text = path.read_text(encoding="utf-8", errors="ignore")
+    if has_duplicate_artifact_fields(text, CRITICAL_DISPATCH_ARTIFACT_FIELDS):
+        return False
+    required_fields = {
+        "dispatch_receipt_version": "v1",
+        "agent_role": REQUIRED_FINAL_CHALLENGE_AGENT_ROLE,
+        "challenge_review_mode": challenge_review_mode,
+        "agent_id": agent_id,
+        "viewpoint": viewpoint,
+        "spawn_model_binding": REQUIRED_DELEGATED_MODEL_BINDING,
+    }
+    for key, expected in required_fields.items():
+        if not artifact_field_equals(text, key, expected):
+            return False
+    if extract_artifact_field(text, "model_policy").lower() != REQUIRED_DELEGATED_MODEL_POLICY:
+        return False
+    if extract_artifact_field(text, "route_context").lower() == REQUIRED_FINAL_POLICY_ROUTE_CONTEXT:
+        return False
+    if is_placeholder_reference(extract_artifact_field(text, "model_resolution_basis_ref")):
+        return False
+    if not artifact_binds_current_v3_snapshot(text, run_dir, authority_path=authority_path):
+        return False
+    if clean_value(extract_artifact_field(text, "spawn_tool_args_model")).lower() != clean_value(expected_model_slug).lower():
+        return False
+    if (
+        clean_value(extract_artifact_field(text, "spawn_tool_args_reasoning_effort")).lower()
+        != clean_value(expected_reasoning_effort).lower()
+    ):
+        return False
+    resolved_model_slug = clean_value(extract_artifact_field(text, "resolved_model_slug"))
+    resolved_reasoning_effort = clean_value(extract_artifact_field(text, "resolved_reasoning_effort"))
+    if resolved_model_slug and resolved_model_slug.lower() != clean_value(expected_model_slug).lower():
+        return False
+    if resolved_reasoning_effort and resolved_reasoning_effort.lower() != clean_value(expected_reasoning_effort).lower():
+        return False
+    return True
+
+
+def verification_dispatch_receipt_is_valid(
+    path: Path,
+    *,
+    run_dir: Path,
+    agent_id: str,
+    expected_model_slug: str,
+    expected_reasoning_effort: str,
+    authority_path: Path | None = None,
+) -> bool:
+    text = path.read_text(encoding="utf-8", errors="ignore")
+    if has_duplicate_artifact_fields(text, CRITICAL_DISPATCH_ARTIFACT_FIELDS + ("verification_agent_mode",)):
+        return False
+    required_fields = {
+        "dispatch_receipt_version": "v1",
+        "agent_role": REQUIRED_VERIFICATION_AGENT_ROLE,
+        "verification_agent_mode": REQUIRED_VERIFICATION_AGENT_MODE,
+        "agent_id": agent_id,
+        "spawn_model_binding": REQUIRED_DELEGATED_MODEL_BINDING,
+    }
+    for key, expected in required_fields.items():
+        if not artifact_field_equals(text, key, expected):
+            return False
+    if extract_artifact_field(text, "model_policy").lower() != REQUIRED_DELEGATED_MODEL_POLICY:
+        return False
+    if extract_artifact_field(text, "route_context").lower() == REQUIRED_FINAL_POLICY_ROUTE_CONTEXT:
+        return False
+    if not artifact_binds_current_v3_snapshot(text, run_dir, authority_path=authority_path):
+        return False
+    if clean_value(extract_artifact_field(text, "spawn_tool_args_model")).lower() != clean_value(expected_model_slug).lower():
+        return False
+    if (
+        clean_value(extract_artifact_field(text, "spawn_tool_args_reasoning_effort")).lower()
+        != clean_value(expected_reasoning_effort).lower()
+    ):
+        return False
+    resolved_model_slug = clean_value(extract_artifact_field(text, "resolved_model_slug"))
+    resolved_reasoning_effort = clean_value(extract_artifact_field(text, "resolved_reasoning_effort"))
+    if resolved_model_slug and resolved_model_slug.lower() != clean_value(expected_model_slug).lower():
+        return False
+    if resolved_reasoning_effort and resolved_reasoning_effort.lower() != clean_value(expected_reasoning_effort).lower():
+        return False
+    return True
+
+
+def verification_agent_artifact_is_valid(
+    path: Path | None,
+    run_dir: Path,
+    authority_path: Path | None = None,
+) -> bool:
+    if path is None:
+        return False
+    text = path.read_text(encoding="utf-8", errors="ignore")
+    if has_duplicate_artifact_fields(text, CRITICAL_VERIFICATION_ARTIFACT_FIELDS):
+        return False
+    if not artifact_binds_current_v3_snapshot(text, run_dir, authority_path=authority_path):
+        return False
+    required_fields = {
+        "agent_role": REQUIRED_VERIFICATION_AGENT_ROLE,
+        "verification_agent_mode": REQUIRED_VERIFICATION_AGENT_MODE,
+        "spawn_model_binding": REQUIRED_DELEGATED_MODEL_BINDING,
+    }
+    for key, expected in required_fields.items():
+        if not artifact_field_equals(text, key, expected):
+            return False
+    if extract_artifact_field(text, "model_policy").lower() != REQUIRED_DELEGATED_MODEL_POLICY:
+        return False
+    if clean_value(extract_artifact_field(text, "verification_status")).lower() not in {"pass", "passed"}:
+        return False
+    if clean_value(extract_artifact_field(text, "verification_result")).lower() not in {"pass", "passed"}:
+        return False
+    if is_noneish(extract_artifact_field(text, "verification_command")):
+        return False
+    verification_ref = extract_artifact_field(text, "verification_ref")
+    evidence_ref = extract_artifact_field(text, "evidence_ref")
+    if resolve_artifact_ref(verification_ref, run_dir) is None or resolve_artifact_ref(evidence_ref, run_dir) is None:
+        return False
+    agent_id = extract_artifact_field(text, "agent_id").lower()
+    if not agent_id:
+        return False
+    model_slug = clean_value(extract_artifact_field(text, "resolved_model_slug"))
+    reasoning_effort = clean_value(extract_artifact_field(text, "resolved_reasoning_effort"))
+    if not delegated_model_is_allowed(model_slug, reasoning_effort):
+        return False
+    if clean_value(extract_artifact_field(text, "spawn_tool_args_model")).lower() != model_slug.lower():
+        return False
+    if clean_value(extract_artifact_field(text, "spawn_tool_args_reasoning_effort")).lower() != reasoning_effort.lower():
+        return False
+    if is_placeholder_reference(extract_artifact_field(text, "spawn_tool_call_ref")):
+        return False
+    dispatch_path = resolve_artifact_ref(extract_artifact_field(text, "spawn_tool_call_ref"), run_dir)
+    if dispatch_path is None:
+        return False
+    return verification_dispatch_receipt_is_valid(
+        dispatch_path,
+        run_dir=run_dir,
+        agent_id=agent_id,
+        expected_model_slug=model_slug,
+        expected_reasoning_effort=reasoning_effort,
+        authority_path=authority_path,
+    )
+
+
+def implementation_challenge_artifacts_are_valid(
+    refs: list[str],
+    *,
+    run_dir: Path,
+    challenge_review_mode: str,
+    required_viewpoints: set[str],
+    required_model_mix: dict[tuple[str, str], int] = REQUIRED_IMPLEMENTATION_CHALLENGE_MODEL_MIX,
+    authority_path: Path | None = None,
+) -> bool:
+    expected_count = len(required_viewpoints)
+    if len(refs) != expected_count or len(set(refs)) != expected_count:
+        return False
+    seen_viewpoints: set[str] = set()
+    model_mix_counts: dict[tuple[str, str], int] = {}
+    agent_ids: set[str] = set()
+    for ref in refs:
+        path = resolve_artifact_ref(ref, run_dir)
+        if path is None:
+            return False
+        text = path.read_text(encoding="utf-8", errors="ignore")
+        if has_duplicate_artifact_fields(text, CRITICAL_PROOF_ARTIFACT_FIELDS):
+            return False
+        if not artifact_binds_current_v3_snapshot(text, run_dir, authority_path=authority_path):
+            return False
+        if not artifact_field_equals(text, "agent_role", REQUIRED_FINAL_CHALLENGE_AGENT_ROLE):
+            return False
+        if not artifact_field_equals(text, "challenge_review_mode", challenge_review_mode):
+            return False
+        if not artifact_alias_values_are_allowed(text, ("vote", "verdict"), {"allow", "pass", "approve"}):
+            return False
+        verdict = (
+            extract_artifact_field(text, "vote")
+            or extract_artifact_field(text, "verdict")
+        ).lower()
+        if verdict not in {"allow", "pass", "approve"}:
+            return False
+        viewpoint = extract_artifact_field(text, "viewpoint").lower()
+        if viewpoint not in required_viewpoints or viewpoint in seen_viewpoints:
+            return False
+        seen_viewpoints.add(viewpoint)
+        agent_id = extract_artifact_field(text, "agent_id").lower()
+        if not agent_id or agent_id in agent_ids:
+            return False
+        agent_ids.add(agent_id)
+        if extract_artifact_field(text, "model_policy").lower() != REQUIRED_DELEGATED_MODEL_POLICY:
+            return False
+        if is_placeholder_reference(extract_artifact_field(text, "model_resolution_basis_ref")):
+            return False
+        model_slug = clean_value(extract_artifact_field(text, "resolved_model_slug"))
+        reasoning_effort = clean_value(extract_artifact_field(text, "resolved_reasoning_effort"))
+        if not delegated_model_is_allowed(model_slug, reasoning_effort):
+            return False
+        if extract_artifact_field(text, "spawn_model_binding").lower() != REQUIRED_DELEGATED_MODEL_BINDING:
+            return False
+        if clean_value(extract_artifact_field(text, "spawn_tool_args_model")).lower() != model_slug.lower():
+            return False
+        if clean_value(extract_artifact_field(text, "spawn_tool_args_reasoning_effort")).lower() != reasoning_effort.lower():
+            return False
+        if is_placeholder_reference(extract_artifact_field(text, "spawn_tool_call_ref")):
+            return False
+        dispatch_path = resolve_artifact_ref(extract_artifact_field(text, "spawn_tool_call_ref"), run_dir)
+        if dispatch_path is None or not implementation_dispatch_receipt_is_valid(
+            dispatch_path,
+            run_dir=run_dir,
+            challenge_review_mode=challenge_review_mode,
+            viewpoint=viewpoint,
+            agent_id=agent_id,
+            expected_model_slug=model_slug,
+            expected_reasoning_effort=reasoning_effort,
+            authority_path=authority_path,
+        ):
+            return False
+        freshness_status = (
+            extract_artifact_field(text, "freshness_status")
+            or extract_artifact_field(text, "freshness")
+        ).lower()
+        if freshness_status not in FRESH_PROOF_STATUSES:
+            return False
+        key = delegated_lane_model_key(model_slug, reasoning_effort)
+        model_mix_counts[key] = model_mix_counts.get(key, 0) + 1
+    return seen_viewpoints == required_viewpoints and model_mix_counts == required_model_mix
+
+
+def implementation_mini_plan_validation_evidence_is_valid(
+    evidence: object,
+    run_dir: Path,
+    authority_path: Path | None = None,
+) -> bool:
+    text = clean_value(str(evidence))
+    if is_noneish(text):
+        return False
+    guarded_tokens = (
+        "pre_plan_validation_lane_count",
+        "post_plan_validation_lane_count",
+        "pre_plan_validation_viewpoint_set",
+        "post_plan_validation_viewpoint_set",
+        "pre_plan_validation_verdict",
+        "post_plan_validation_verdict",
+        "pre_plan_validation_refs",
+        "post_plan_validation_refs",
+        "strategy_ref",
+        "verification_agent_ref",
+    )
+    if any(not inline_token_is_unique(text, key) for key in guarded_tokens):
+        return False
+    required_pairs = {
+        "pre_plan_validation_lane_count": "2",
+        "post_plan_validation_lane_count": "2",
+    }
+    for key, expected in required_pairs.items():
+        if clean_value(extract_inline_token_value(text, key) or "").lower() != expected:
+            return False
+    if not inline_token_set_is_exact(
+        extract_inline_token_value(text, "pre_plan_validation_viewpoint_set"),
+        REQUIRED_IMPLEMENTATION_MINI_PLAN_VIEWPOINTS,
+    ):
+        return False
+    if not inline_token_set_is_exact(
+        extract_inline_token_value(text, "post_plan_validation_viewpoint_set"),
+        REQUIRED_IMPLEMENTATION_MINI_PLAN_VIEWPOINTS,
+    ):
+        return False
+    if clean_value(extract_inline_token_value(text, "pre_plan_validation_verdict") or "").lower() not in {
+        "pass_unanimous",
+        "allow_unanimous",
+    }:
+        return False
+    if clean_value(extract_inline_token_value(text, "post_plan_validation_verdict") or "").lower() not in {
+        "pass_unanimous",
+        "allow_unanimous",
+    }:
+        return False
+    strategy_refs = split_policy_list(extract_inline_token_value(text, "strategy_ref") or "")
+    if len(strategy_refs) != 1:
+        return False
+    strategy_path = resolve_artifact_ref(strategy_refs[0], run_dir)
+    if strategy_path is None or not strategy_artifact_has_top_model_authority(strategy_path, run_dir, authority_path=authority_path):
+        return False
+    verification_agent_refs = split_policy_list(extract_inline_token_value(text, "verification_agent_ref") or "")
+    if len(verification_agent_refs) != 1:
+        return False
+    verification_agent_path = resolve_artifact_ref(verification_agent_refs[0], run_dir)
+    if verification_agent_path is None or verification_agent_path.resolve() == strategy_path.resolve():
+        return False
+    if not verification_agent_artifact_is_valid(verification_agent_path, run_dir, authority_path=authority_path):
+        return False
+    pre_refs = split_policy_list(extract_inline_token_value(text, "pre_plan_validation_refs") or "")
+    post_refs = split_policy_list(extract_inline_token_value(text, "post_plan_validation_refs") or "")
+    return implementation_challenge_artifacts_are_valid(
+        pre_refs,
+        run_dir=run_dir,
+        challenge_review_mode="pre_implementation_plan_validation",
+        required_viewpoints=REQUIRED_IMPLEMENTATION_MINI_PLAN_VIEWPOINTS,
+        required_model_mix=REQUIRED_IMPLEMENTATION_MINI_MODEL_MIX,
+        authority_path=authority_path,
+    ) and implementation_challenge_artifacts_are_valid(
+        post_refs,
+        run_dir=run_dir,
+        challenge_review_mode="post_implementation_plan_validation",
+        required_viewpoints=REQUIRED_IMPLEMENTATION_MINI_PLAN_VIEWPOINTS,
+        required_model_mix=REQUIRED_IMPLEMENTATION_MINI_MODEL_MIX,
+        authority_path=authority_path,
+    )
+
+
+def implementation_gate_mini_requirement_is_satisfied(
+    evidence: object,
+    run_dir: Path,
+    risk_tier: str,
+    authority_path: Path | None = None,
+) -> bool:
+    if implementation_mini_plan_validation_evidence_is_valid(evidence, run_dir, authority_path=authority_path):
+        return True
+    if is_tier1_self_check_authorized(evidence, run_dir, risk_tier):
+        return True
+    text = clean_value(str(evidence))
+    if risk_tier in {"tier0_trivial", "tier1_local"}:
+        guarded_tokens = (
+            "mini_plan_validation_skip",
+            "local_verification",
+            "skip_scope_evidence",
+            "external_api",
+            "db_or_migration",
+            "security_sensitive",
+            "verification_result",
+        )
+        if any(not inline_token_is_unique(text, key) for key in guarded_tokens):
+            return False
+        skip = clean_value(extract_inline_token_value(text, "mini_plan_validation_skip") or "").lower()
+        allowed_skips = {"single_file_local_fix", "user_specified_exact_change", "no_behavior_change"}
+        if risk_tier == "tier0_trivial":
+            allowed_skips.add("tier0_trivial")
+        if skip not in allowed_skips:
+            return False
+        if not inline_token_is_unique(text, "mini_plan_validation_skip"):
+            return False
+        if is_noneish(extract_inline_token_value(text, "local_verification") or ""):
+            return False
+        if is_noneish(extract_inline_token_value(text, "skip_scope_evidence") or ""):
+            return False
+        for key in ("external_api", "db_or_migration", "security_sensitive"):
+            if clean_value(extract_inline_token_value(text, key) or "").lower() != "false":
+                return False
+        if clean_value(extract_inline_token_value(text, "verification_result") or "").lower() not in {"pass", "passed"}:
+            return False
+        return True
+    if risk_tier == "not_classified":
+        return (
+            clean_value(extract_inline_token_value(text, "file_changing_batch") or "").lower() == "false"
+            and not is_noneish(extract_inline_token_value(text, "non_file_change_evidence") or "")
+        )
+    return False
+
+
+def implementation_gate_evidence_is_valid(evidence: object, run_dir: Path, authority_path: Path | None = None) -> bool:
+    text = clean_value(str(evidence))
+    if is_noneish(text):
+        return False
+    guarded_tokens = (
+        "pre_challenge_lane_count",
+        "post_challenge_lane_count",
+        "pre_challenge_viewpoint_set",
+        "post_challenge_viewpoint_set",
+        "pre_challenge_verdict",
+        "post_challenge_verdict",
+        "strategy_ref",
+        "pre_challenge_refs",
+        "post_challenge_refs",
+    )
+    if any(not inline_token_is_unique(text, key) for key in guarded_tokens):
+        return False
+    required_pairs = {
+        "pre_challenge_lane_count": "5",
+        "post_challenge_lane_count": "5",
+    }
+    for key, expected in required_pairs.items():
+        if clean_value(extract_inline_token_value(text, key) or "").lower() != expected:
+            return False
+    if not inline_token_set_is_exact(
+        extract_inline_token_value(text, "pre_challenge_viewpoint_set"),
+        REQUIRED_PRE_IMPLEMENTATION_VIEWPOINTS,
+    ):
+        return False
+    if not inline_token_set_is_exact(
+        extract_inline_token_value(text, "post_challenge_viewpoint_set"),
+        REQUIRED_POST_IMPLEMENTATION_VIEWPOINTS,
+    ):
+        return False
+    if clean_value(extract_inline_token_value(text, "pre_challenge_verdict") or "").lower() not in {
+        "pass_unanimous",
+        "allow_unanimous",
+    }:
+        return False
+    if clean_value(extract_inline_token_value(text, "post_challenge_verdict") or "").lower() not in {
+        "pass_unanimous",
+        "allow_unanimous",
+    }:
+        return False
+    strategy_ref = clean_value(extract_inline_token_value(text, "strategy_ref") or "")
+    if is_noneish(strategy_ref):
+        return False
+    strategy_path = resolve_artifact_ref(strategy_ref, run_dir)
+    if strategy_path is None or not strategy_artifact_has_top_model_authority(strategy_path, run_dir, authority_path=authority_path):
+        return False
+    pre_refs = split_policy_list(extract_inline_token_value(text, "pre_challenge_refs") or "")
+    post_refs = split_policy_list(extract_inline_token_value(text, "post_challenge_refs") or "")
+    return implementation_challenge_artifacts_are_valid(
+        pre_refs,
+        run_dir=run_dir,
+        challenge_review_mode="pre_implementation_challenge",
+        required_viewpoints=REQUIRED_PRE_IMPLEMENTATION_VIEWPOINTS,
+        required_model_mix=REQUIRED_IMPLEMENTATION_CHALLENGE_MODEL_MIX,
+        authority_path=authority_path,
+    ) and implementation_challenge_artifacts_are_valid(
+        post_refs,
+        run_dir=run_dir,
+        challenge_review_mode="post_implementation_challenge",
+        required_viewpoints=REQUIRED_POST_IMPLEMENTATION_VIEWPOINTS,
+        required_model_mix=REQUIRED_IMPLEMENTATION_CHALLENGE_MODEL_MIX,
+        authority_path=authority_path,
+    )
+
+
+def implementation_gate_evidence_has_valid_waiver(evidence: object, risk_tier: str) -> bool:
+    text = clean_value(str(evidence))
+    if is_noneish(text):
+        return False
+    waiver = clean_value(extract_inline_token_value(text, "implementation_gate_waiver") or "").lower()
+    if waiver not in {"delegated_tool_unavailable", "demonstrably_mechanical"}:
+        return False
+    if clean_value(extract_inline_token_value(text, "risk_tier") or "") != risk_tier:
+        return False
+    if is_noneish(extract_inline_token_value(text, "waiver_reason") or ""):
+        return False
+    if is_noneish(extract_inline_token_value(text, "compensating_verification") or ""):
+        return False
+    return True
+
+
+def goal_completion_evidence_has_implementation_authority(evidence: object, run_dir: Path) -> bool:
+    text = clean_value(str(evidence))
+    authority_ref = extract_inline_token_value(text, "implementation_authority_ref")
+    authority_path = resolve_run_scoped_ref(authority_ref, run_dir)
+    if authority_path is None:
+        return False
+    try:
+        relative = authority_path.resolve().relative_to(run_dir.resolve()).as_posix().lower()
+    except ValueError:
+        return False
+    return relative in {"revised-plan.md", "handoff.md"} or relative.startswith("implementation-authority/")
+
+
+def looks_like_sha256_digest(value: object) -> bool:
+    text = clean_value(str(value)).lower()
+    return bool(re.fullmatch(r"(?:sha256:)?[a-f0-9]{64}", text))
+
+
+def normalize_sha256_digest(value: object) -> str:
+    text = clean_value(str(value)).lower()
+    if text.startswith("sha256:"):
+        return text.split(":", 1)[1]
+    return text
+
+
+def file_sha256_digest(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def looks_like_nonnegative_integer(value: object) -> bool:
+    text = clean_value(str(value))
+    return bool(re.fullmatch(r"\d+", text))
+
+
+def proof_token_matches(proof_text: str, key: str, expected: str) -> bool:
+    actual = extract_inline_token_value(proof_text, key)
+    return actual is not None and clean_value(actual).lower() == clean_value(expected).lower()
+
+
+def resolve_artifact_ref(value: str | None, run_dir: Path) -> Path | None:
+    if value is None or is_placeholder_reference(value):
+        return None
+    text = clean_value(value)
+    lowered = text.lower()
+    if lowered.startswith("run://"):
+        return resolve_run_scoped_ref(text[6:], run_dir)
+    if lowered.startswith("file://"):
+        return resolve_run_scoped_ref(text[7:], run_dir)
+    if "://" in lowered:
+        return None
+    return resolve_run_scoped_ref(text, run_dir)
+
+
+def read_record_text(path: Path | None) -> str:
+    if path is None or not path.exists() or not path.is_file():
+        return ""
+    return path.read_text(encoding="utf-8", errors="ignore")
+
+
+def reject_json_constant(value: str) -> object:
+    raise ValueError(f"invalid JSON constant: {value}")
+
+
+def reject_nonfinite_json_numbers(value: object) -> object:
+    if isinstance(value, float) and not math.isfinite(value):
+        raise ValueError("non-finite JSON number")
+    if isinstance(value, dict):
+        for nested in value.values():
+            reject_nonfinite_json_numbers(nested)
+    elif isinstance(value, list):
+        for nested in value:
+            reject_nonfinite_json_numbers(nested)
+    return value
+
+
+def read_record_json(path: Path | None) -> dict[str, object] | None:
+    if path is None or not path.exists() or not path.is_file():
+        return None
+    try:
+        data = json.loads(
+            path.read_text(encoding="utf-8-sig", errors="ignore"),
+            object_pairs_hook=reject_duplicate_json_pairs,
+            parse_constant=reject_json_constant,
+        )
+    except (json.JSONDecodeError, ValueError):
+        return None
+    try:
+        reject_nonfinite_json_numbers(data)
+    except ValueError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def canonical_json_alias_key(key: str) -> str:
+    text = key.replace("-", "_")
+    text = re.sub(r"(?<=[A-Z])([A-Z][a-z])", r"_\1", text)
+    text = re.sub(r"(?<=[a-z0-9])([A-Z])", r"_\1", text)
+    text = re.sub(r"_+", "_", text)
+    return text.strip("_").lower()
+
+
+def reject_duplicate_json_pairs(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    alias_seen: dict[str, str] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON key: {key}")
+        alias_key = canonical_json_alias_key(key)
+        if alias_key in alias_seen:
+            raise ValueError(f"duplicate JSON key alias: {alias_seen[alias_key]} / {key}")
+        alias_seen[alias_key] = key
+        result[key] = value
+    return result
+
+
+def loads_strict_json_object(text: str) -> dict[str, object] | None:
+    try:
+        data = json.loads(
+            text,
+            object_pairs_hook=reject_duplicate_json_pairs,
+            parse_constant=reject_json_constant,
+        )
+    except (json.JSONDecodeError, ValueError):
+        return None
+    try:
+        reject_nonfinite_json_numbers(data)
+    except ValueError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def camelize_key(key: str) -> str:
+    parts = key.split("_")
+    return parts[0] + "".join(part.capitalize() for part in parts[1:])
+
+
+def record_value(path: Path | None, key: str) -> str:
+    data = read_record_json(path)
+    if data is not None:
+        candidates = [key, camelize_key(key), key.replace("_", "-")]
+        for candidate in candidates:
+            if candidate in data:
+                value = data[candidate]
+                if isinstance(value, bool):
+                    return "true" if value else "false"
+                return clean_value(str(value))
+    return extract_artifact_field(read_record_text(path), key)
+
+
+def record_value_matches(path: Path | None, key: str, expected: object) -> bool:
+    return clean_value(record_value(path, key)).lower() == clean_value(str(expected)).lower()
+
+
+def record_truthy(path: Path | None, key: str) -> bool:
+    return clean_value(record_value(path, key)).lower() in {"true", "yes", "1", "allow", "allowed", "pass", "passed"}
+
+
+def record_json_get(data: dict[str, object] | None, key: str) -> object | None:
+    if data is None:
+        return None
+    for candidate in (key, camelize_key(key), key.replace("_", "-")):
+        if candidate in data:
+            return data[candidate]
+    return None
+
+
+def json_semantic_alias_present(data: dict[str, object], key: str) -> bool:
+    return any(candidate in data for candidate in (key, camelize_key(key), key.replace("_", "-")))
+
+
+def json_semantic_alias_conflict(data: dict[str, object], keys: tuple[str, ...]) -> bool:
+    return sum(1 for key in keys if json_semantic_alias_present(data, key)) > 1
+
+
+def json_value_text(data: dict[str, object] | None, key: str) -> str:
+    value = record_json_get(data, key)
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if value is None:
+        return ""
+    if isinstance(value, (dict, list)):
+        return ""
+    return clean_value(str(value))
+
+
+def json_value_matches(data: dict[str, object] | None, key: str, expected: object) -> bool:
+    return json_value_text(data, key).lower() == clean_value(str(expected)).lower()
+
+
+def json_digest_matches(data: dict[str, object] | None, key: str, expected: object) -> bool:
+    actual = json_value_text(data, key)
+    return looks_like_sha256_digest(actual) and normalize_sha256_digest(actual) == normalize_sha256_digest(expected)
+
+
+def normalized_in_run_artifact_ref(value: str | None, run_dir: Path) -> str:
+    path = resolve_artifact_ref(value, run_dir)
+    if path is None:
+        return ""
+    try:
+        return path.resolve().relative_to(run_dir.resolve()).as_posix().lower()
+    except ValueError:
+        return ""
+
+
+def authority_record_conflict_errors(run_dir: Path) -> list[str]:
+    canonical = run_dir / "authority" / "run-authority.json"
+    legacy = run_dir / "run-authority.json"
+    if canonical.exists() and legacy.exists() and canonical.resolve() != legacy.resolve():
+        return ["v3 authority handoff must not have conflicting authority/run-authority.json and run-authority.json"]
+    return []
+
+
+def current_v3_authority_record_path(run_dir: Path, selected_authority_path: Path | None = None) -> Path | None:
+    if selected_authority_path is not None and read_record_json(selected_authority_path) is not None:
+        return selected_authority_path
+    for candidate in (run_dir / "authority" / "run-authority.json", run_dir / "run-authority.json"):
+        if read_record_json(candidate) is not None:
+            return candidate
+    return None
+
+
+def artifact_binds_current_v3_snapshot(text: str, run_dir: Path, authority_path: Path | None = None) -> bool:
+    authority_path = current_v3_authority_record_path(run_dir, selected_authority_path=authority_path)
+    if authority_path is None:
+        return True
+    required = {
+        "source_digest": compute_source_digest(run_dir),
+        "stage_graph_digest": file_sha256_digest(run_dir / "revised-plan.md") if (run_dir / "revised-plan.md").exists() else "",
+        "authority_revision": record_value(authority_path, "authority_revision"),
+        "authority_epoch": record_value(authority_path, "authority_epoch"),
+    }
+    for key, expected in required.items():
+        if is_noneish(expected) or not artifact_field_equals(text, key, expected):
+            return False
+    for key in (
+        "completion_subject_type",
+        "completion_subject_digest",
+        "authority_record_ref",
+        "adapter_manifest_ref",
+        "adapter_effective_config_digest",
+    ):
+        expected = record_value(authority_path, key)
+        if expected and not artifact_field_equals(text, key, expected):
+            return False
+    return True
+
+
+def cas_transition_receipt_is_valid(
+    path: Path | None,
+    *,
+    run_dir: Path,
+    authority_record_ref: str,
+    authority_path: Path | None,
+    run_authority_revision: str,
+    run_authority_epoch: str,
+) -> bool:
+    if path is None or authority_path is None:
+        return False
+    text = read_record_text(path)
+    if has_duplicate_artifact_fields(text, tuple([
+        "authority_transition_receipt_version",
+        "transition",
+        "result",
+        "pre_status",
+        "post_status",
+        "authority_record_ref",
+        "authority_revision",
+        "authority_epoch",
+        "pre_authority_ref",
+        "pre_authority_digest",
+        "post_authority_digest",
+    ])):
+        return False
+    required_fields = {
+        "authority_transition_receipt_version": REQUIRED_CAS_TRANSITION_RECEIPT_VERSION,
+        "transition": "active_to_completed",
+        "result": "success",
+        "pre_status": "active",
+        "post_status": "completed",
+        "authority_record_ref": authority_record_ref,
+        "authority_revision": run_authority_revision,
+        "authority_epoch": run_authority_epoch,
+    }
+    for key, expected in required_fields.items():
+        if not record_value_matches(path, key, expected):
+            return False
+    pre_digest = record_value(path, "pre_authority_digest")
+    post_digest = record_value(path, "post_authority_digest")
+    pre_authority_ref = record_value(path, "pre_authority_ref")
+    pre_authority_path = resolve_artifact_ref(pre_authority_ref, run_dir)
+    if not looks_like_sha256_digest(pre_digest) or not looks_like_sha256_digest(post_digest):
+        return False
+    if pre_authority_path is None or read_record_json(pre_authority_path) is None:
+        return False
+    if normalize_sha256_digest(pre_digest) != file_sha256_digest(pre_authority_path):
+        return False
+    if not record_value_matches(pre_authority_path, "status", "active"):
+        return False
+    for key, expected in {
+        "run_id": record_value(authority_path, "run_id"),
+        "project_identity_digest": record_value(authority_path, "project_identity_digest"),
+        "vcs_identity": record_value(authority_path, "vcs_identity"),
+        "goal_digest": record_value(authority_path, "goal_digest"),
+        "schema_version": record_value(authority_path, "schema_version"),
+        "policy_version": record_value(authority_path, "policy_version"),
+        "prompt_version": record_value(authority_path, "prompt_version"),
+        "validator_version": record_value(authority_path, "validator_version"),
+        "authority_revision": run_authority_revision,
+        "authority_epoch": run_authority_epoch,
+        "source_digest": record_value(authority_path, "source_digest"),
+        "stage_graph_digest": record_value(authority_path, "stage_graph_digest"),
+        "adapter_manifest_ref": record_value(authority_path, "adapter_manifest_ref"),
+        "adapter_effective_config_digest": record_value(authority_path, "adapter_effective_config_digest"),
+        "completion_subject_type": record_value(authority_path, "completion_subject_type"),
+        "completion_subject_digest": record_value(authority_path, "completion_subject_digest"),
+        "supersedes": record_value(authority_path, "supersedes"),
+        "superseded_by": record_value(authority_path, "superseded_by"),
+    }.items():
+        if expected and not record_value_matches(pre_authority_path, key, expected):
+            return False
+    if normalize_sha256_digest(post_digest) != file_sha256_digest(authority_path):
+        return False
+    if normalize_sha256_digest(pre_digest) == normalize_sha256_digest(post_digest):
+        return False
+    return True
+
+
+def adapter_manifest_validation_errors(
+    *,
+    manifest_path: Path | None,
+    manifest_ref: str,
+    expected_digest: str,
+    run_dir: Path,
+) -> list[str]:
+    errors: list[str] = []
+    if manifest_path is None:
+        return ["adapter_manifest_ref must resolve to an existing in-run adapter manifest artifact"]
+    if normalize_sha256_digest(expected_digest) != file_sha256_digest(manifest_path):
+        errors.append("adapter_effective_config_digest must match sha256(adapter_manifest_ref)")
+    manifest = read_record_json(manifest_path)
+    if manifest is None:
+        errors.append("adapter_manifest_ref must be a JSON adapter manifest")
+        return errors
+
+    override = record_json_get(manifest, "agent_loop_override")
+    override_status = (
+        json_value_text(manifest, "agent_loop_override_status")
+        or json_value_text(manifest, "override_validation_status")
+        or "none"
+    ).lower()
+    if override is None:
+        override = {}
+    if not isinstance(override, dict):
+        errors.append("adapter manifest agent_loop_override must be an object when present")
+        return errors
+    unknown = sorted(str(key) for key in override.keys() if str(key) not in ALLOWED_ADAPTER_OVERRIDE_KEYS)
+    if unknown:
+        errors.append(f"adapter manifest has non-allowlisted agent_loop_override keys: {', '.join(unknown)}")
+    if override and override_status != "validated":
+        errors.append("adapter manifest with agent_loop_override entries must record agent_loop_override_status=validated")
+    if not override and override_status not in {"none", "not_present", "no_overrides", "validated"}:
+        errors.append("adapter manifest override status must be none/not_present/no_overrides/validated")
+    if manifest_ref.lower().startswith("run://") and json_value_text(manifest, "manifest_ref"):
+        if json_value_text(manifest, "manifest_ref").lower() != manifest_ref.lower():
+            errors.append("adapter manifest manifest_ref must match handoff adapter_manifest_ref")
+    project_policy_refs = record_json_get(manifest, "project_policy_refs")
+    if project_policy_refs is not None:
+        if not isinstance(project_policy_refs, list):
+            errors.append("adapter manifest project_policy_refs must be a list when present")
+        else:
+            repo_root = repo_root_for_run_dir(run_dir)
+            for ref in project_policy_refs:
+                ref_token = re.sub(r"\s+", "", clean_value(str(ref)).lower())
+                if ref_token not in OPTIONAL_PROJECT_POLICY_REF_TOKENS:
+                    errors.append(f"adapter manifest has unsupported project_policy_refs entry: {ref}")
+                elif ref_token == "agents.md#loopcompletiongate" and (
+                    repo_root is None or not (repo_root / "AGENTS.md").exists()
+                ):
+                    errors.append("adapter manifest project_policy_refs AGENTS.md#LoopCompletionGate must resolve under bound repo root")
+    return errors
+
+
+def telemetry_required_for_fields(fields: dict[str, object]) -> bool:
+    values = [
+        clean_value(str(fields.get("stage_status", ""))),
+        clean_value(str(fields.get("current_batch", ""))),
+        fields.get("latest_evidence_summary", ""),
+        fields.get("blocking_findings", ""),
+        clean_value(str(fields.get("continue_exit_status", ""))),
+        clean_value(str(fields.get("continue_exit_evidence", ""))),
+        clean_value(str(fields.get("turn_exit_cause", ""))),
+        clean_value(str(fields.get("turn_exit_evidence", ""))),
+        clean_value(str(fields.get("next_mandatory_action", ""))),
+    ]
+    for value in values:
+        for item in iter_flattened_text_values(value):
+            if has_resource_telemetry_required_signal(item):
+                return True
+    return False
+
+
+def has_resource_telemetry_required_signal(value: str) -> bool:
+    has_ui_copy_context = contains_any_pattern(value, RESOURCE_TELEMETRY_UI_COPY_ONLY_CONTEXT_PATTERNS)
+    segment_records = split_scheduling_signal_segment_records(value)
+    segments = [segment for segment, _separator in segment_records]
+    suppressed_segment_indexes = doc_or_copy_prefixed_segment_indexes(segment_records)
+    if has_adjacent_resource_telemetry_signal(
+        segments,
+        has_ui_copy_context=has_ui_copy_context,
+        suppressed_segment_indexes=suppressed_segment_indexes,
+    ):
+        return True
+    for index, segment in enumerate(segments):
+        if index in suppressed_segment_indexes:
+            continue
+        if contains_any_pattern(segment, RESOURCE_TELEMETRY_EXPLICIT_DECISION_PATTERNS):
+            return True
+        if resource_telemetry_segment_is_real_scheduling_signal(segment, has_ui_copy_context=has_ui_copy_context):
+            return True
+        if contains_any_pattern(segment, RESOURCE_TELEMETRY_UI_COPY_ONLY_CONTEXT_PATTERNS):
+            continue
+        if has_ui_copy_context and contains_any_pattern(segment, RESOURCE_TELEMETRY_AMBIGUOUS_COPY_LABEL_PATTERNS):
+            continue
+        if contains_any_pattern(segment, RESOURCE_TELEMETRY_NON_SCHEDULING_CONTEXT_PATTERNS):
+            continue
+        if contains_any_pattern(segment, RESOURCE_TELEMETRY_NEGATED_PATTERNS):
+            continue
+        if contains_any_pattern(segment, RESOURCE_TELEMETRY_REQUIRED_PATTERNS):
+            return True
+    return False
+
+
+def has_resource_telemetry_real_scheduling_signal(value: str) -> bool:
+    has_ui_copy_context = contains_any_pattern(value, RESOURCE_TELEMETRY_UI_COPY_ONLY_CONTEXT_PATTERNS)
+    segment_records = split_scheduling_signal_segment_records(value)
+    segments = [segment for segment, _separator in segment_records]
+    suppressed_segment_indexes = doc_or_copy_prefixed_segment_indexes(segment_records)
+    if has_adjacent_resource_telemetry_signal(
+        segments,
+        has_ui_copy_context=has_ui_copy_context,
+        suppressed_segment_indexes=suppressed_segment_indexes,
+    ):
+        return True
+    for index, segment in enumerate(segments):
+        if index in suppressed_segment_indexes:
+            continue
+        if resource_telemetry_segment_is_real_scheduling_signal(segment, has_ui_copy_context=has_ui_copy_context):
+            return True
+    return False
+
+
+def has_adjacent_resource_telemetry_signal(
+    segments: list[str],
+    *,
+    has_ui_copy_context: bool,
+    suppressed_segment_indexes: set[int] | None = None,
+) -> bool:
+    actor_patterns = [
+        r"\bspawn_agent\b",
+        r"\bdelegated[- ]agent\b",
+        r"\bdelegated\b",
+        r"\bdispatch\b",
+        r"\bcontroller\b",
+        r"\bchallenge\b",
+        r"\bagent\b",
+        r"\bprocess\b",
+    ]
+    quota_patterns = [
+        r"\bquota\b",
+        r"\busage\s+limits?\b",
+        r"\bcredits?\b",
+        r"\brate[-\s]?limits?\b",
+        r"\btool[-\s]?limits?\b",
+        r"\bresource[-\s]?busy\b",
+    ]
+    return has_adjacent_delegated_quota_blocker_signal(
+        segments,
+        actor_patterns=actor_patterns,
+        quota_patterns=quota_patterns,
+        has_ui_copy_context=has_ui_copy_context,
+        suppressed_segment_indexes=suppressed_segment_indexes,
+    )
+
+
+def resource_telemetry_segment_is_real_scheduling_signal(segment: str, *, has_ui_copy_context: bool) -> bool:
+    if not contains_any_pattern(segment, RESOURCE_TELEMETRY_REAL_SCHEDULING_PATTERNS):
+        return False
+    if contains_any_pattern(segment, RESOURCE_TELEMETRY_UI_COPY_ONLY_CONTEXT_PATTERNS):
+        return False
+    if contains_any_pattern(segment, RESOURCE_TELEMETRY_NON_SCHEDULING_CONTEXT_PATTERNS):
+        return False
+    if has_ui_copy_context and contains_any_pattern(segment, RESOURCE_TELEMETRY_AMBIGUOUS_COPY_LABEL_PATTERNS):
+        return False
+    if contains_any_pattern(segment, RESOURCE_TELEMETRY_REAL_SCHEDULING_NEGATED_PATTERNS):
+        return False
+    if contains_any_pattern(segment, RESOURCE_TELEMETRY_NEGATED_PATTERNS):
+        return False
+    return True
+
+
+def resource_telemetry_validation_errors(path: Path | None, *, required: bool, ref: str = "") -> list[str]:
+    if path is None:
+        return ["resource_telemetry_ref is required for resource/quota/tool-limit scheduling changes"] if required else []
+    if clean_value(ref).lower() != "run://telemetry/resource-events.jsonl":
+        return ["resource_telemetry_ref must use canonical run://telemetry/resource-events.jsonl"]
+    if not path.exists() or not path.is_file():
+        return ["resource_telemetry_ref must resolve to an existing in-run JSONL artifact"]
+    errors: list[str] = []
+    valid_relevant_event = False
+    for index, raw_line in enumerate(path.read_text(encoding="utf-8", errors="ignore").splitlines(), start=1):
+        line = raw_line.strip()
+        if not line:
+            continue
+        event = loads_strict_json_object(line)
+        if event is None:
+            errors.append(f"resource telemetry line {index} must be valid JSON")
+            continue
+        required_fields = {
+            "telemetry_schema_version": "resource-telemetry-v1",
+            "event_id": None,
+            "observed_at": None,
+            "event_type": None,
+            "affected_action": None,
+            "decision_impact": None,
+            "next_action": None,
+        }
+        for key, expected in required_fields.items():
+            value = event.get(key)
+            if not isinstance(value, str):
+                errors.append(f"resource telemetry line {index} requires scalar string {key}")
+                continue
+            if expected is None:
+                if is_noneish(value):
+                    errors.append(f"resource telemetry line {index} requires {key}")
+            elif clean_value(value).lower() != expected:
+                errors.append(f"resource telemetry line {index} requires {key}={expected}")
+        event_type = clean_value(event.get("event_type", "") if isinstance(event.get("event_type"), str) else "").lower()
+        if event_type and event_type not in RESOURCE_TELEMETRY_EVENT_TYPES:
+            errors.append(f"resource telemetry line {index} has unsupported event_type={event_type}")
+        decision_impact = event.get("decision_impact")
+        if event_type in RESOURCE_TELEMETRY_EVENT_TYPES and isinstance(decision_impact, str) and not is_noneish(decision_impact):
+            valid_relevant_event = True
+    if required and not valid_relevant_event:
+        errors.append("resource_telemetry_ref must contain at least one relevant event with decision_impact")
+    return errors
+
+
+def research_dispatch_receipt_is_valid(
+    path: Path | None,
+    *,
+    lane: str,
+    research_cycle_id: str,
+    source_digest: str,
+    run_authority_revision: str,
+    run_authority_epoch: str,
+    agent_id: str,
+    expected_model_slug: str,
+    expected_reasoning_effort: str,
+) -> bool:
+    if path is None:
+        return False
+    text = read_record_text(path)
+    if has_duplicate_artifact_fields(text, CRITICAL_RESEARCH_DISPATCH_FIELDS):
+        return False
+    required_fields = {
+        "dispatch_receipt_version": "v1",
+        "phase": REQUIRED_RESEARCH_DISPATCH_PHASE,
+        "agent_role": "research_agent",
+        "research_lane": lane,
+        "research_cycle_id": research_cycle_id,
+        "agent_id": agent_id,
+        "source_ref": REQUIRED_SOURCE_REF,
+        "source_digest": source_digest,
+        "authority_revision_at_dispatch": run_authority_revision,
+        "authority_epoch_at_dispatch": run_authority_epoch,
+        "model_policy": REQUIRED_DELEGATED_MODEL_POLICY,
+        "spawn_model_binding": REQUIRED_DELEGATED_MODEL_BINDING,
+    }
+    for key, expected in required_fields.items():
+        if not artifact_field_equals(text, key, expected):
+            return False
+    if extract_artifact_field(text, "route_context").lower() == REQUIRED_FINAL_POLICY_ROUTE_CONTEXT:
+        return False
+    if is_placeholder_reference(extract_artifact_field(text, "model_resolution_basis_ref")):
+        return False
+    if clean_value(extract_artifact_field(text, "spawn_tool_args_model")).lower() != clean_value(expected_model_slug).lower():
+        return False
+    if (
+        clean_value(extract_artifact_field(text, "spawn_tool_args_reasoning_effort")).lower()
+        != clean_value(expected_reasoning_effort).lower()
+    ):
+        return False
+    resolved_model_slug = clean_value(extract_artifact_field(text, "resolved_model_slug"))
+    resolved_reasoning_effort = clean_value(extract_artifact_field(text, "resolved_reasoning_effort"))
+    if resolved_model_slug and resolved_model_slug.lower() != clean_value(expected_model_slug).lower():
+        return False
+    if resolved_reasoning_effort and resolved_reasoning_effort.lower() != clean_value(expected_reasoning_effort).lower():
+        return False
+    return True
+
+
+def challenge_cycle_lane_set_errors(
+    *,
+    lanes: object,
+    lane_field_name: str,
+    required_phase: str,
+    cycle_id: str,
+    source_digest: str,
+    authority_record_ref: str,
+    run_authority_revision: str,
+    run_authority_epoch: str,
+    refs_to_match: list[str] | None,
+    run_dir: Path,
+) -> tuple[list[str], set[str]]:
+    errors: list[str] = []
+    if not isinstance(lanes, list):
+        return [f"challenge_cycle_ref must record {lane_field_name} as a list"], set()
+
+    required_challenge_mode = REQUIRED_FINAL_CHALLENGE_MODES.get(required_phase)
+    if not required_challenge_mode:
+        return [f"challenge_cycle_ref has unsupported phase for {lane_field_name}: {required_phase}"], set()
+
+    seen_lanes: set[str] = set()
+    cycle_artifact_refs: set[str] = set()
+    agent_ids: set[str] = set()
+    model_mix_counts: dict[tuple[str, str], int] = {}
+    for item in lanes:
+        if not isinstance(item, dict):
+            errors.append(f"challenge_cycle {lane_field_name} entries must be objects")
+            continue
+        if json_semantic_alias_conflict(item, ("lane", "lane_name", "viewpoint")):
+            errors.append(f"challenge_cycle {lane_field_name} entry has conflicting lane aliases")
+            continue
+        if json_semantic_alias_conflict(item, ("verdict", "vote")):
+            errors.append(f"challenge_cycle {lane_field_name} entry has conflicting verdict aliases")
+            continue
+        if json_semantic_alias_conflict(item, ("artifact_ref", "lane_artifact_ref", "ref")):
+            errors.append(f"challenge_cycle {lane_field_name} entry has conflicting artifact ref aliases")
+            continue
+        lane = (
+            json_value_text(item, "lane")
+            or json_value_text(item, "lane_name")
+            or json_value_text(item, "viewpoint")
+        ).lower()
+        verdict = (json_value_text(item, "verdict") or json_value_text(item, "vote")).lower()
+        if lane not in REQUIRED_STOP_LANES:
+            errors.append(f"challenge_cycle {lane_field_name} lane has invalid or missing lane name: {lane or '<missing>'}")
+            continue
+        if lane in seen_lanes:
+            errors.append(f"challenge_cycle {lane_field_name} lane is duplicated: {lane}")
+        seen_lanes.add(lane)
+        if verdict != "allow":
+            errors.append(f"challenge_cycle {lane_field_name} lane {lane} must have verdict=allow")
+        artifact_ref = (
+            json_value_text(item, "artifact_ref")
+            or json_value_text(item, "lane_artifact_ref")
+            or json_value_text(item, "ref")
+        )
+        artifact_path = resolve_artifact_ref(artifact_ref, run_dir)
+        if artifact_path is None:
+            errors.append(f"challenge_cycle {lane_field_name} lane {lane} must reference an existing in-run lane artifact")
+            continue
+        normalized_ref = normalized_in_run_artifact_ref(artifact_ref, run_dir)
+        if normalized_ref:
+            cycle_artifact_refs.add(normalized_ref)
+        artifact_text = read_record_text(artifact_path)
+        if has_duplicate_artifact_fields(artifact_text, CRITICAL_PROOF_ARTIFACT_FIELDS):
+            errors.append(f"challenge_cycle {lane_field_name} lane {lane} artifact has duplicate critical field")
+            continue
+        if extract_artifact_field(artifact_text, "phase").lower() != required_phase:
+            errors.append(f"challenge_cycle {lane_field_name} lane {lane} artifact phase mismatch")
+        if extract_artifact_field(artifact_text, "agent_role").lower() != REQUIRED_FINAL_CHALLENGE_AGENT_ROLE:
+            errors.append(f"challenge_cycle {lane_field_name} lane {lane} artifact must record agent_role={REQUIRED_FINAL_CHALLENGE_AGENT_ROLE}")
+        if extract_artifact_field(artifact_text, "challenge_review_mode").lower() != required_challenge_mode:
+            errors.append(f"challenge_cycle {lane_field_name} lane {lane} artifact challenge_review_mode mismatch")
+        if extract_artifact_field(artifact_text, "viewpoint").lower() != lane:
+            errors.append(f"challenge_cycle {lane_field_name} lane {lane} artifact viewpoint mismatch")
+        if not artifact_alias_values_are_allowed(artifact_text, ("vote", "verdict"), {"allow"}):
+            errors.append(f"challenge_cycle {lane_field_name} lane {lane} artifact must record vote=allow without conflicting verdict aliases")
+        coverage_text = extract_artifact_field(artifact_text, "coverage_viewpoints") or extract_artifact_field(
+            artifact_text,
+            "covered_viewpoints",
+        )
+        if not pipe_value_set_is_exact(coverage_text, REQUIRED_STOP_LANE_COVERAGE[lane]):
+            errors.append(f"challenge_cycle {lane_field_name} lane {lane} artifact coverage_viewpoints mismatch")
+        if not final_audit_artifact_is_valid(artifact_text, run_dir, required_phase):
+            errors.append(f"challenge_cycle {lane_field_name} lane {lane} artifact final audit metadata is invalid")
+        if not is_placeholder_reference(cycle_id) and extract_artifact_field(artifact_text, "challenge_cycle_id").lower() != cycle_id.lower():
+            errors.append(f"challenge_cycle {lane_field_name} lane {lane} artifact must bind challenge_cycle_id={cycle_id}")
+        if extract_artifact_field(artifact_text, "source_digest").lower() != source_digest.lower():
+            errors.append(f"challenge_cycle {lane_field_name} lane {lane} artifact must bind source_digest={source_digest}")
+
+        agent_id = extract_artifact_field(artifact_text, "agent_id").lower()
+        if not agent_id:
+            errors.append(f"challenge_cycle {lane_field_name} lane {lane} artifact must record agent_id")
+        elif agent_id in agent_ids:
+            errors.append(f"challenge_cycle {lane_field_name} lane {lane} artifact agent_id is duplicated")
+        else:
+            agent_ids.add(agent_id)
+        model_slug = clean_value(extract_artifact_field(artifact_text, "resolved_model_slug"))
+        reasoning_effort = clean_value(extract_artifact_field(artifact_text, "resolved_reasoning_effort"))
+        if not delegated_model_is_allowed(model_slug, reasoning_effort):
+            errors.append(f"challenge_cycle {lane_field_name} lane {lane} must use allowed delegated model/effort")
+        else:
+            key = delegated_lane_model_key(model_slug, reasoning_effort)
+            model_mix_counts[key] = model_mix_counts.get(key, 0) + 1
+        if extract_artifact_field(artifact_text, "model_policy").lower() != REQUIRED_DELEGATED_MODEL_POLICY:
+            errors.append(f"challenge_cycle {lane_field_name} lane {lane} must record model_policy={REQUIRED_DELEGATED_MODEL_POLICY}")
+        if is_placeholder_reference(extract_artifact_field(artifact_text, "model_resolution_basis_ref")):
+            errors.append(f"challenge_cycle {lane_field_name} lane {lane} must record model_resolution_basis_ref")
+        if extract_artifact_field(artifact_text, "spawn_model_binding").lower() != REQUIRED_DELEGATED_MODEL_BINDING:
+            errors.append(f"challenge_cycle {lane_field_name} lane {lane} must record spawn_model_binding={REQUIRED_DELEGATED_MODEL_BINDING}")
+        if clean_value(extract_artifact_field(artifact_text, "spawn_tool_args_model")).lower() != model_slug.lower():
+            errors.append(f"challenge_cycle {lane_field_name} lane {lane} spawn_tool_args_model must match resolved_model_slug")
+        if clean_value(extract_artifact_field(artifact_text, "spawn_tool_args_reasoning_effort")).lower() != reasoning_effort.lower():
+            errors.append(f"challenge_cycle {lane_field_name} lane {lane} spawn_tool_args_reasoning_effort must match resolved_reasoning_effort")
+
+        artifact_round_id = extract_artifact_field(artifact_text, "challenge_round_id")
+        artifact_closeout_round_id = extract_artifact_field(artifact_text, "closeout_round_id")
+        if is_placeholder_reference(artifact_round_id):
+            errors.append(f"challenge_cycle {lane_field_name} lane {lane} artifact must record challenge_round_id")
+        if is_placeholder_reference(artifact_closeout_round_id):
+            errors.append(f"challenge_cycle {lane_field_name} lane {lane} artifact must record closeout_round_id")
+
+        spawn_tool_call_ref = extract_artifact_field(artifact_text, "spawn_tool_call_ref")
+        if is_placeholder_reference(spawn_tool_call_ref):
+            errors.append(f"challenge_cycle {lane_field_name} lane {lane} must record spawn_tool_call_ref")
+            continue
+        dispatch_path = resolve_artifact_ref(spawn_tool_call_ref, run_dir)
+        if dispatch_path is None:
+            errors.append(f"challenge_cycle {lane_field_name} lane {lane} spawn_tool_call_ref must resolve to an in-run dispatch receipt")
+            continue
+        if not dispatch_receipt_is_valid(
+            dispatch_path,
+            run_dir=run_dir,
+            required_phase=required_phase,
+            challenge_round_id=artifact_round_id,
+            closeout_round_id=artifact_closeout_round_id,
+            source_digest=source_digest,
+            viewpoint=lane,
+            agent_id=agent_id,
+            expected_model_slug=model_slug,
+            expected_reasoning_effort=reasoning_effort,
+            expected_challenge_cycle_id=None if is_placeholder_reference(cycle_id) else cycle_id,
+            expected_authority_record_ref=authority_record_ref,
+            expected_authority_revision=run_authority_revision,
+            expected_authority_epoch=run_authority_epoch,
+        ):
+            errors.append(f"challenge_cycle {lane_field_name} lane {lane} dispatch receipt is invalid or mismatched")
+
+    if seen_lanes != REQUIRED_STOP_LANES:
+        missing = ", ".join(sorted(REQUIRED_STOP_LANES - seen_lanes))
+        extra = ", ".join(sorted(seen_lanes - REQUIRED_STOP_LANES))
+        detail = "; ".join(part for part in (f"missing: {missing}" if missing else "", f"extra: {extra}" if extra else "") if part)
+        errors.append(f"challenge_cycle {lane_field_name} must exactly cover required final lane set ({detail})")
+    if model_mix_counts != REQUIRED_DELEGATED_MODEL_MIX:
+        errors.append(f"challenge_cycle {lane_field_name} lanes must use the required five-lane model mix")
+    if refs_to_match is not None:
+        aggregate_refs = {normalized_in_run_artifact_ref(ref, run_dir) for ref in refs_to_match}
+        aggregate_refs.discard("")
+        if aggregate_refs != cycle_artifact_refs:
+            aggregate_label = "goal_completion_evidence refs" if lane_field_name == "lanes" else "stop_consensus_evidence refs"
+            errors.append(f"{aggregate_label} must exactly match challenge_cycle {lane_field_name} artifact refs")
+    return errors, cycle_artifact_refs
+
+
+def challenge_cycle_validation_errors(
+    *,
+    cycle_path: Path | None,
+    challenge_cycle_digest_set: str,
+    authority_record_ref: str,
+    authority_path: Path | None,
+    run_authority_revision: str,
+    run_authority_epoch: str,
+    source_digest: str,
+    stage_graph_digest: str,
+    adapter_manifest_ref: str,
+    adapter_effective_config_digest: str,
+    completion_subject_type: str,
+    completion_subject_ref: str,
+    completion_subject_digest: str,
+    composite_subject_digest: str,
+    goal_completion_refs: list[str] | None,
+    stop_consensus_refs: list[str] | None,
+    run_dir: Path,
+) -> list[str]:
+    errors: list[str] = []
+    if cycle_path is None:
+        return ["challenge_cycle_ref must resolve to an existing in-run challenge cycle artifact"]
+    if normalize_sha256_digest(challenge_cycle_digest_set) != file_sha256_digest(cycle_path):
+        errors.append("challenge_cycle_digest_set must match sha256(challenge_cycle_ref)")
+    cycle = read_record_json(cycle_path)
+    if cycle is None:
+        errors.append("challenge_cycle_ref must be a JSON challenge-cycle artifact")
+        return errors
+
+    required_scalar_matches = {
+        "authority_record_ref": authority_record_ref,
+        "authority_revision_at_dispatch": run_authority_revision,
+        "authority_epoch_at_dispatch": run_authority_epoch,
+    }
+    for key, expected in required_scalar_matches.items():
+        if not json_value_matches(cycle, key, expected):
+            errors.append(f"challenge_cycle_ref must record {key}={expected}")
+    if not json_value_matches(cycle, "all_lanes_allow", "true"):
+        errors.append("challenge_cycle_ref must record all_lanes_allow=true")
+    if json_value_text(cycle, "challenge_cycle_schema_version") != REQUIRED_CHALLENGE_CYCLE_SCHEMA_VERSION:
+        errors.append(f"challenge_cycle_ref must record challenge_cycle_schema_version={REQUIRED_CHALLENGE_CYCLE_SCHEMA_VERSION}")
+    cycle_id = json_value_text(cycle, "cycle_id")
+    if is_placeholder_reference(cycle_id):
+        errors.append("challenge_cycle_ref must record a concrete cycle_id")
+
+    for key in ("schema_version", "policy_version", "prompt_version", "validator_version"):
+        expected = record_value(authority_path, key)
+        if is_noneish(expected):
+            errors.append(f"authority_record_ref must record {key} for challenge-cycle version matching")
+        elif not json_value_matches(cycle, key, expected):
+            errors.append(f"challenge_cycle_ref must record {key} matching authority_record_ref")
+
+    digest_set = record_json_get(cycle, "reviewed_digest_set")
+    if not isinstance(digest_set, dict):
+        errors.append("challenge_cycle_ref must record reviewed_digest_set object")
+        digest_set = {}
+    digest_matches = {
+        "source_digest": source_digest,
+        "stage_graph_digest": stage_graph_digest,
+        "adapter_effective_config_digest": adapter_effective_config_digest,
+        "completion_subject_digest": completion_subject_digest,
+    }
+    for key, expected in digest_matches.items():
+        if not json_digest_matches(digest_set, key, expected):
+            errors.append(f"challenge_cycle reviewed_digest_set must bind {key}={expected}")
+    scalar_digest_set_matches = {
+        "adapter_manifest_ref": adapter_manifest_ref,
+        "completion_subject_type": completion_subject_type,
+        "completion_subject_ref": completion_subject_ref,
+    }
+    for key, expected in scalar_digest_set_matches.items():
+        if not json_value_matches(digest_set, key, expected):
+            errors.append(f"challenge_cycle reviewed_digest_set must bind {key}={expected}")
+    if looks_like_sha256_digest(composite_subject_digest):
+        if not json_digest_matches(digest_set, "composite_subject_digest", composite_subject_digest):
+            errors.append("challenge_cycle reviewed_digest_set must bind composite_subject_digest")
+
+    lane_errors, _ = challenge_cycle_lane_set_errors(
+        lanes=record_json_get(cycle, "lanes"),
+        lane_field_name="lanes",
+        required_phase="goal_completion",
+        cycle_id=cycle_id,
+        source_digest=source_digest,
+        authority_record_ref=authority_record_ref,
+        run_authority_revision=run_authority_revision,
+        run_authority_epoch=run_authority_epoch,
+        refs_to_match=goal_completion_refs,
+        run_dir=run_dir,
+    )
+    errors.extend(lane_errors)
+    if stop_consensus_refs is not None:
+        stop_lane_errors, _ = challenge_cycle_lane_set_errors(
+            lanes=record_json_get(cycle, "stop_lanes"),
+            lane_field_name="stop_lanes",
+            required_phase="stop_authorization",
+            cycle_id=cycle_id,
+            source_digest=source_digest,
+            authority_record_ref=authority_record_ref,
+            run_authority_revision=run_authority_revision,
+            run_authority_epoch=run_authority_epoch,
+            refs_to_match=stop_consensus_refs,
+            run_dir=run_dir,
+        )
+        errors.extend(stop_lane_errors)
+    return errors
+
+
+def research_cycle_validation_errors(
+    *,
+    cycle_path: Path | None,
+    research_cycle_digest_set: str,
+    source_digest: str,
+    run_authority_revision: str,
+    run_authority_epoch: str,
+    run_dir: Path,
+) -> list[str]:
+    errors: list[str] = []
+    if cycle_path is None:
+        return ["research_cycle_ref must resolve to an existing in-run research cycle artifact"]
+    if normalize_sha256_digest(research_cycle_digest_set) != file_sha256_digest(cycle_path):
+        errors.append("research_cycle_digest_set must match sha256(research_cycle_ref)")
+    cycle = read_record_json(cycle_path)
+    if cycle is None:
+        errors.append("research_cycle_ref must be a JSON research-cycle artifact")
+        return errors
+    cycle_id = json_value_text(cycle, "cycle_id")
+    if is_placeholder_reference(cycle_id):
+        errors.append("research_cycle_ref must record a concrete cycle_id")
+    if json_value_text(cycle, "research_cycle_schema_version") != REQUIRED_RESEARCH_CYCLE_SCHEMA_VERSION:
+        errors.append(f"research_cycle_ref must record research_cycle_schema_version={REQUIRED_RESEARCH_CYCLE_SCHEMA_VERSION}")
+    if not json_value_matches(cycle, "source_digest", source_digest):
+        errors.append("research_cycle_ref must record matching source_digest")
+    if not json_value_matches(cycle, "authority_revision_at_dispatch", run_authority_revision):
+        errors.append("research_cycle_ref must record matching authority_revision_at_dispatch")
+    if not json_value_matches(cycle, "authority_epoch_at_dispatch", run_authority_epoch):
+        errors.append("research_cycle_ref must record matching authority_epoch_at_dispatch")
+    if not json_value_matches(cycle, "all_lanes_merged", "true"):
+        errors.append("research_cycle_ref must record all_lanes_merged=true")
+    lanes = record_json_get(cycle, "lanes")
+    if not isinstance(lanes, list):
+        errors.append("research_cycle_ref must record lanes as a list")
+        return errors
+    seen_lanes: set[str] = set()
+    agent_ids: set[str] = set()
+    model_mix_counts: dict[tuple[str, str], int] = {}
+    for item in lanes:
+        if not isinstance(item, dict):
+            errors.append("research_cycle lanes entries must be objects")
+            continue
+        if json_semantic_alias_conflict(item, ("lane", "research_lane", "viewpoint")):
+            errors.append("research_cycle lane entry has conflicting lane aliases")
+            continue
+        if json_semantic_alias_conflict(item, ("verdict", "vote")):
+            errors.append("research_cycle lane entry has conflicting verdict aliases")
+            continue
+        if json_semantic_alias_conflict(item, ("artifact_ref", "lane_artifact_ref", "ref")):
+            errors.append("research_cycle lane entry has conflicting artifact ref aliases")
+            continue
+        lane = (
+            json_value_text(item, "lane")
+            or json_value_text(item, "research_lane")
+            or json_value_text(item, "viewpoint")
+        ).lower()
+        verdict = (json_value_text(item, "verdict") or json_value_text(item, "vote")).lower()
+        if lane not in REQUIRED_INITIAL_RESEARCH_LANES:
+            errors.append(f"research_cycle lane has invalid or missing lane name: {lane or '<missing>'}")
+            continue
+        if lane in seen_lanes:
+            errors.append(f"research_cycle lane is duplicated: {lane}")
+        seen_lanes.add(lane)
+        if verdict not in {"allow", "pass", "merged"}:
+            errors.append(f"research_cycle lane {lane} must have verdict=allow|pass|merged")
+        artifact_ref = (
+            json_value_text(item, "artifact_ref")
+            or json_value_text(item, "lane_artifact_ref")
+            or json_value_text(item, "ref")
+        )
+        artifact_path = resolve_artifact_ref(artifact_ref, run_dir)
+        if artifact_path is None:
+            errors.append(f"research_cycle lane {lane} must reference an existing in-run lane artifact")
+            continue
+        artifact_text = read_record_text(artifact_path)
+        if has_duplicate_artifact_fields(artifact_text, CRITICAL_RESEARCH_ARTIFACT_FIELDS):
+            errors.append(f"research_cycle lane {lane} artifact has duplicate critical field")
+            continue
+        artifact_lane_fields = [
+            value
+            for value in (
+                extract_artifact_field(artifact_text, "research_lane"),
+                extract_artifact_field(artifact_text, "viewpoint"),
+            )
+            if not is_noneish(value)
+        ]
+        if len(artifact_lane_fields) > 1:
+            errors.append(f"research_cycle lane {lane} artifact has conflicting lane aliases")
+            continue
+        artifact_lane = (
+            extract_artifact_field(artifact_text, "research_lane")
+            or extract_artifact_field(artifact_text, "viewpoint")
+        ).lower()
+        if artifact_lane != lane:
+            errors.append(f"research_cycle lane {lane} artifact lane mismatch")
+        if not artifact_alias_values_are_allowed(artifact_text, ("vote", "verdict"), {"allow", "pass", "merged"}):
+            errors.append(f"research_cycle lane {lane} artifact must record vote/verdict=allow|pass|merged")
+        if extract_artifact_field(artifact_text, "agent_role").lower() != "research_agent":
+            errors.append(f"research_cycle lane {lane} artifact must record agent_role=research_agent")
+        if not is_placeholder_reference(cycle_id) and extract_artifact_field(artifact_text, "research_cycle_id").lower() != cycle_id.lower():
+            errors.append(f"research_cycle lane {lane} artifact must bind research_cycle_id={cycle_id}")
+        if extract_artifact_field(artifact_text, "source_digest").lower() != source_digest.lower():
+            errors.append(f"research_cycle lane {lane} artifact must bind source_digest={source_digest}")
+        if extract_artifact_field(artifact_text, "authority_revision_at_dispatch").lower() != run_authority_revision.lower():
+            errors.append(f"research_cycle lane {lane} artifact must bind authority_revision_at_dispatch={run_authority_revision}")
+        if extract_artifact_field(artifact_text, "authority_epoch_at_dispatch").lower() != run_authority_epoch.lower():
+            errors.append(f"research_cycle lane {lane} artifact must bind authority_epoch_at_dispatch={run_authority_epoch}")
+        agent_id = extract_artifact_field(artifact_text, "agent_id").lower()
+        if not agent_id:
+            errors.append(f"research_cycle lane {lane} artifact must record agent_id")
+        elif agent_id in agent_ids:
+            errors.append(f"research_cycle lane {lane} artifact agent_id is duplicated")
+        else:
+            agent_ids.add(agent_id)
+        model_slug = clean_value(extract_artifact_field(artifact_text, "resolved_model_slug"))
+        reasoning_effort = clean_value(extract_artifact_field(artifact_text, "resolved_reasoning_effort"))
+        if not delegated_model_is_allowed(model_slug, reasoning_effort):
+            errors.append(f"research_cycle lane {lane} must use allowed delegated model/effort")
+        else:
+            key = delegated_lane_model_key(model_slug, reasoning_effort)
+            model_mix_counts[key] = model_mix_counts.get(key, 0) + 1
+        if extract_artifact_field(artifact_text, "model_policy").lower() != REQUIRED_DELEGATED_MODEL_POLICY:
+            errors.append(f"research_cycle lane {lane} must record model_policy={REQUIRED_DELEGATED_MODEL_POLICY}")
+        if is_placeholder_reference(extract_artifact_field(artifact_text, "model_resolution_basis_ref")):
+            errors.append(f"research_cycle lane {lane} must record model_resolution_basis_ref")
+        if extract_artifact_field(artifact_text, "spawn_model_binding").lower() != REQUIRED_DELEGATED_MODEL_BINDING:
+            errors.append(f"research_cycle lane {lane} must record spawn_model_binding={REQUIRED_DELEGATED_MODEL_BINDING}")
+        if clean_value(extract_artifact_field(artifact_text, "spawn_tool_args_model")).lower() != model_slug.lower():
+            errors.append(f"research_cycle lane {lane} spawn_tool_args_model must match resolved_model_slug")
+        if clean_value(extract_artifact_field(artifact_text, "spawn_tool_args_reasoning_effort")).lower() != reasoning_effort.lower():
+            errors.append(f"research_cycle lane {lane} spawn_tool_args_reasoning_effort must match resolved_reasoning_effort")
+        spawn_tool_call_ref = extract_artifact_field(artifact_text, "spawn_tool_call_ref")
+        if is_placeholder_reference(spawn_tool_call_ref):
+            errors.append(f"research_cycle lane {lane} must record spawn_tool_call_ref")
+            continue
+        dispatch_path = resolve_artifact_ref(spawn_tool_call_ref, run_dir)
+        if not research_dispatch_receipt_is_valid(
+            dispatch_path,
+            lane=lane,
+            research_cycle_id=cycle_id,
+            source_digest=source_digest,
+            run_authority_revision=run_authority_revision,
+            run_authority_epoch=run_authority_epoch,
+            agent_id=agent_id,
+            expected_model_slug=model_slug,
+            expected_reasoning_effort=reasoning_effort,
+        ):
+            errors.append(f"research_cycle lane {lane} dispatch receipt is invalid or mismatched")
+    if seen_lanes != REQUIRED_INITIAL_RESEARCH_LANES:
+        missing = ", ".join(sorted(REQUIRED_INITIAL_RESEARCH_LANES - seen_lanes))
+        extra = ", ".join(sorted(seen_lanes - REQUIRED_INITIAL_RESEARCH_LANES))
+        detail = "; ".join(part for part in (f"missing: {missing}" if missing else "", f"extra: {extra}" if extra else "") if part)
+        errors.append(f"research_cycle lanes must exactly cover required initial research lane set ({detail})")
+    if model_mix_counts != REQUIRED_DELEGATED_MODEL_MIX:
+        errors.append("research_cycle lanes must use the required five-lane model mix")
+    return errors
 
 
 def validate_fields(
@@ -1882,7 +5037,11 @@ def validate_fields(
         return errors
 
     for key, allowed in ENUMS.items():
+        if key in OPTIONAL_SCALAR_FIELDS and key not in fields:
+            continue
         value = clean_value(str(fields.get(key, "")))
+        if key in OPTIONAL_SCALAR_FIELDS and is_noneish(value):
+            continue
         if value not in allowed:
             errors.append(f"{key} must be one of {sorted(allowed)}, got: {value}")
 
@@ -1897,6 +5056,7 @@ def validate_fields(
     sequential_status = clean_value(str(fields["sequential_objectives_status"]))
     stop_status = clean_value(str(fields["stop_authorization_status"]))
     stop_consensus_status = clean_value(str(fields["stop_consensus_status"]))
+    stop_consensus_evidence_text = clean_value(str(fields["stop_consensus_evidence"]))
     external_basis = clean_value(str(fields["external_authority_basis"]))
     pause_reason = clean_value(str(fields["pause_reason"])).lower()
     stop_evidence = clean_value(str(fields["stop_authorization_evidence"])).lower()
@@ -1932,15 +5092,349 @@ def validate_fields(
     resume_instructions_text = flatten_multivalue_text(fields["resume_instructions"]).lower()
     current_stage = clean_value(str(fields["current_or_next_stage"]))
     next_action = clean_value(str(fields["next_mandatory_action"]))
+    risk_tier = clean_value(str(fields["risk_tier"]))
+    implementation_gate_status = clean_value(str(fields["implementation_gate_status"]))
+    implementation_gate_evidence = clean_value(str(fields["implementation_gate_evidence"]))
     handoff_path = run_dir / "handoff.md"
     remaining_required_stages = fields["remaining_required_stages"]
     blocking_findings_text = flatten_multivalue_text(fields["blocking_findings"])
     implementation_like_intent = run_intent in IMPLEMENTATION_INTENTS
+    schema_version = clean_value(str(fields["handoff_schema_version"]))
+    work_type = clean_value(str(fields.get("work_type", "not_classified"))).lower()
+    review_kind = clean_value(str(fields.get("review_kind", "not_applicable"))).lower()
+    authority_record_ref = clean_value(str(fields.get("authority_record_ref", "none")))
+    run_authority_status = clean_value(str(fields.get("run_authority_status", "not_applicable"))).lower()
+    run_authority_revision = clean_value(str(fields.get("run_authority_revision", "none")))
+    run_authority_epoch = clean_value(str(fields.get("run_authority_epoch", "none")))
+    source_digest_field = clean_value(str(fields.get("source_digest", "none")))
+    stage_graph_digest = clean_value(str(fields.get("stage_graph_digest", "none")))
+    adapter_manifest_ref = clean_value(str(fields.get("adapter_manifest_ref", "none")))
+    adapter_conformance_status = clean_value(str(fields.get("adapter_conformance_status", "not_applicable"))).lower()
+    adapter_effective_config_digest = clean_value(str(fields.get("adapter_effective_config_digest", "none")))
+    resource_telemetry_ref = clean_value(str(fields.get("resource_telemetry_ref", "none")))
+    research_cycle_ref = clean_value(str(fields.get("research_cycle_ref", "none")))
+    research_cycle_status = clean_value(str(fields.get("research_cycle_status", "not_applicable"))).lower()
+    research_cycle_digest_set = clean_value(str(fields.get("research_cycle_digest_set", "none")))
+    completion_subject_type = clean_value(str(fields.get("completion_subject_type", "not_classified"))).lower()
+    completion_subject_ref = clean_value(str(fields.get("completion_subject_ref", "none")))
+    completion_subject_digest = clean_value(str(fields.get("completion_subject_digest", "none")))
+    composite_subject_digest = clean_value(str(fields.get("composite_subject_digest", "none")))
+    challenge_cycle_ref = clean_value(str(fields.get("challenge_cycle_ref", "none")))
+    challenge_cycle_status = clean_value(str(fields.get("challenge_cycle_status", "not_applicable"))).lower()
+    challenge_cycle_digest_set = clean_value(str(fields.get("challenge_cycle_digest_set", "none")))
+    visible_output_contract = clean_value(str(fields.get("visible_output_contract", "not_applicable"))).lower()
     source_path = run_dir / "source.md"
     ideas_path = run_dir / REQUIRED_IDEAS_REF
     research_path = run_dir / "research.md"
     revised_plan_path = run_dir / "revised-plan.md"
     evidence_path = run_dir / "evidence.md"
+
+    terminal_verified_stop = run_decision == "stop" and goal_completion_status == VERIFIED_COMPLETE_STATUS
+
+    if terminal_verified_stop and not explicit_user_stop_override and schema_version != REQUIRED_AUTHORITY_SCHEMA_VERSION:
+        errors.append(f"verified terminal stop requires handoff_schema_version={REQUIRED_AUTHORITY_SCHEMA_VERSION}")
+
+    telemetry_required = telemetry_required_for_fields(fields)
+    if telemetry_required or not is_noneish(resource_telemetry_ref):
+        errors.extend(
+            resource_telemetry_validation_errors(
+                resolve_artifact_ref(resource_telemetry_ref, run_dir),
+                required=telemetry_required,
+                ref=resource_telemetry_ref,
+            )
+        )
+
+    if schema_version == REQUIRED_AUTHORITY_SCHEMA_VERSION:
+        required_v3_fields = [
+            "work_type",
+            "review_kind",
+            "authority_record_ref",
+            "run_authority_status",
+            "run_authority_revision",
+            "run_authority_epoch",
+            "source_digest",
+            "stage_graph_digest",
+            "adapter_manifest_ref",
+            "adapter_conformance_status",
+            "adapter_effective_config_digest",
+            "research_cycle_ref",
+            "research_cycle_status",
+            "research_cycle_digest_set",
+            "completion_subject_type",
+            "completion_subject_ref",
+            "completion_subject_digest",
+            "composite_subject_digest",
+            "challenge_cycle_ref",
+            "challenge_cycle_status",
+            "challenge_cycle_digest_set",
+            "visible_output_contract",
+        ]
+        for field in required_v3_fields:
+            if field not in fields:
+                errors.append(f"handoff_schema_version=v3-worktype-authority requires handoff field: {field}")
+        if work_type == "not_classified":
+            errors.append("handoff_schema_version=v3-worktype-authority requires a concrete work_type")
+        if work_type == "review" and review_kind == "not_applicable":
+            errors.append("work_type=review requires concrete review_kind")
+        if work_type != "review" and review_kind != "not_applicable":
+            errors.append("review_kind must be not_applicable unless work_type=review")
+        if is_noneish(authority_record_ref):
+            errors.append("v3 authority handoff requires authority_record_ref")
+        elif authority_record_ref.lower() not in {"run://authority/run-authority.json", "run://run-authority.json"}:
+            errors.append("v3 authority_record_ref must be run://authority/run-authority.json or run://run-authority.json")
+        if run_authority_status == "not_applicable":
+            errors.append("v3 authority handoff requires concrete run_authority_status")
+        if not looks_like_nonnegative_integer(run_authority_revision):
+            errors.append("v3 authority handoff requires numeric run_authority_revision")
+        if not looks_like_nonnegative_integer(run_authority_epoch):
+            errors.append("v3 authority handoff requires numeric run_authority_epoch")
+        if not looks_like_sha256_digest(source_digest_field):
+            errors.append("v3 authority handoff requires sha256 source_digest")
+        if not looks_like_sha256_digest(stage_graph_digest):
+            errors.append("v3 authority handoff requires sha256 stage_graph_digest")
+        if revised_plan_path.exists() and looks_like_sha256_digest(stage_graph_digest):
+            actual_stage_graph_digest = file_sha256_digest(revised_plan_path)
+            if normalize_sha256_digest(stage_graph_digest) != actual_stage_graph_digest:
+                errors.append("stage_graph_digest does not match sha256(revised-plan.md)")
+        if is_noneish(adapter_manifest_ref):
+            errors.append("v3 authority handoff requires adapter_manifest_ref")
+        if adapter_conformance_status == "not_applicable":
+            errors.append("v3 authority handoff requires concrete adapter_conformance_status")
+        if not looks_like_sha256_digest(adapter_effective_config_digest):
+            errors.append("v3 authority handoff requires sha256 adapter_effective_config_digest")
+        if research_cycle_status == "allow_unanimous" and (
+            is_noneish(research_cycle_ref) or not looks_like_sha256_digest(research_cycle_digest_set)
+        ):
+            errors.append("research_cycle_status=allow_unanimous requires research_cycle_ref and sha256 research_cycle_digest_set")
+        if completion_subject_type == "not_classified":
+            errors.append("v3 authority handoff requires concrete completion_subject_type")
+        allowed_subject_types = WORK_TYPE_COMPLETION_SUBJECT_TYPES.get(work_type, set())
+        if allowed_subject_types and completion_subject_type not in allowed_subject_types:
+            errors.append(
+                f"work_type={work_type} requires completion_subject_type in {sorted(allowed_subject_types)}"
+            )
+        expected_review_subject_type = REVIEW_KIND_COMPLETION_SUBJECT_TYPES.get(review_kind)
+        if expected_review_subject_type and completion_subject_type != expected_review_subject_type:
+            errors.append(f"review_kind={review_kind} requires completion_subject_type={expected_review_subject_type}")
+        if is_noneish(completion_subject_ref):
+            errors.append("v3 authority handoff requires completion_subject_ref")
+        if not looks_like_sha256_digest(completion_subject_digest):
+            errors.append("v3 authority handoff requires sha256 completion_subject_digest")
+        if work_type == "mixed" and completion_subject_type != "composite_subject":
+            errors.append("work_type=mixed requires completion_subject_type=composite_subject")
+        if work_type == "mixed" and not looks_like_sha256_digest(composite_subject_digest):
+            errors.append("work_type=mixed requires sha256 composite_subject_digest")
+        if challenge_cycle_status == "allow_unanimous" and (
+            is_noneish(challenge_cycle_ref) or not looks_like_sha256_digest(challenge_cycle_digest_set)
+        ):
+            errors.append("challenge_cycle_status=allow_unanimous requires challenge_cycle_ref and sha256 challenge_cycle_digest_set")
+        if source_path.exists() and looks_like_sha256_digest(source_digest_field):
+            actual_source_digest = compute_source_digest(run_dir)
+            if normalize_sha256_digest(source_digest_field) != actual_source_digest:
+                errors.append("source_digest does not match sha256(raw source.md bytes)")
+        authority_path = resolve_artifact_ref(authority_record_ref, run_dir)
+        errors.extend(authority_record_conflict_errors(run_dir))
+        if authority_path is None:
+            errors.append("authority_record_ref must resolve to an existing in-run authority artifact")
+        elif read_record_json(authority_path) is None:
+            errors.append("v3 authority_record_ref must be a JSON authority artifact")
+        else:
+            authority_expected = {
+                "authority_revision": run_authority_revision,
+                "authority_epoch": run_authority_epoch,
+                "status": run_authority_status,
+                "source_digest": source_digest_field,
+                "stage_graph_digest": stage_graph_digest,
+                "adapter_manifest_ref": adapter_manifest_ref,
+                "adapter_conformance_status": adapter_conformance_status,
+                "adapter_effective_config_digest": adapter_effective_config_digest,
+            }
+            for key, expected in authority_expected.items():
+                if not record_value_matches(authority_path, key, expected):
+                    errors.append(f"authority_record_ref must record {key}={expected}")
+            for key, expected in {
+                "schema_version": REQUIRED_AUTHORITY_SCHEMA_VERSION,
+                "policy_version": REQUIRED_AUTHORITY_POLICY_VERSION,
+                "prompt_version": REQUIRED_AUTHORITY_PROMPT_VERSION,
+                "validator_version": REQUIRED_AUTHORITY_VALIDATOR_VERSION,
+            }.items():
+                if not record_value_matches(authority_path, key, expected):
+                    errors.append(f"authority_record_ref must record {key}={expected}")
+        adapter_manifest_path = resolve_artifact_ref(adapter_manifest_ref, run_dir)
+        errors.extend(
+            adapter_manifest_validation_errors(
+                manifest_path=adapter_manifest_path,
+                manifest_ref=adapter_manifest_ref,
+                expected_digest=adapter_effective_config_digest,
+                run_dir=run_dir,
+            )
+        )
+        research_skip_authorized = is_research_skip_authorized(implementation_gate_evidence, run_dir, risk_tier)
+        if research_cycle_status == "allow_unanimous":
+            errors.extend(
+                research_cycle_validation_errors(
+                    cycle_path=resolve_artifact_ref(research_cycle_ref, run_dir),
+                    research_cycle_digest_set=research_cycle_digest_set,
+                    source_digest=source_digest_field,
+                    run_authority_revision=run_authority_revision,
+                    run_authority_epoch=run_authority_epoch,
+                    run_dir=run_dir,
+                )
+            )
+        elif (terminal_verified_stop or implementation_gate_status == "accepted") and not research_skip_authorized:
+            errors.append("v3 terminal or accepted implementation state requires research_cycle_status=allow_unanimous")
+        completion_subject_path = resolve_artifact_ref(completion_subject_ref, run_dir)
+        if completion_subject_path is None:
+            errors.append("completion_subject_ref must resolve to an existing in-run subject artifact")
+        elif normalize_sha256_digest(completion_subject_digest) != file_sha256_digest(completion_subject_path):
+            errors.append("completion_subject_digest must match sha256(completion_subject_ref)")
+        if work_type == "mixed" and completion_subject_path is not None:
+            if normalize_sha256_digest(composite_subject_digest) != file_sha256_digest(completion_subject_path):
+                errors.append("composite_subject_digest must match sha256(completion_subject_ref) for mixed work")
+        challenge_cycle_path = resolve_artifact_ref(challenge_cycle_ref, run_dir)
+        if challenge_cycle_status == "allow_unanimous":
+            errors.extend(
+                challenge_cycle_validation_errors(
+                    cycle_path=challenge_cycle_path,
+                    challenge_cycle_digest_set=challenge_cycle_digest_set,
+                    authority_record_ref=authority_record_ref,
+                    authority_path=authority_path,
+                    run_authority_revision=run_authority_revision,
+                    run_authority_epoch=run_authority_epoch,
+                    source_digest=source_digest_field,
+                    stage_graph_digest=stage_graph_digest,
+                    adapter_manifest_ref=adapter_manifest_ref,
+                    adapter_effective_config_digest=adapter_effective_config_digest,
+                    completion_subject_type=completion_subject_type,
+                    completion_subject_ref=completion_subject_ref,
+                    completion_subject_digest=completion_subject_digest,
+                    composite_subject_digest=composite_subject_digest,
+                    goal_completion_refs=extract_consensus_refs(goal_completion_evidence) if terminal_verified_stop else None,
+                    stop_consensus_refs=extract_consensus_refs(stop_consensus_evidence_text) if terminal_verified_stop and stop_status == "allow" else None,
+                    run_dir=run_dir,
+                )
+            )
+        if run_decision == "continue" and visible_output_contract == "terminal_completion":
+            errors.append("run_decision=continue may not use visible_output_contract=terminal_completion")
+        if terminal_verified_stop:
+            if visible_output_contract != "terminal_completion":
+                errors.append("verified terminal stop requires visible_output_contract=terminal_completion")
+            if adapter_conformance_status != "compatible":
+                errors.append("verified terminal stop requires adapter_conformance_status=compatible")
+            if run_authority_status != "completed":
+                errors.append("verified terminal stop requires run_authority_status=completed after CAS completion")
+            if challenge_cycle_status != "allow_unanimous":
+                errors.append("verified terminal stop requires challenge_cycle_status=allow_unanimous")
+            if is_noneish(challenge_cycle_ref):
+                errors.append("verified terminal stop requires challenge_cycle_ref")
+            if authority_path is not None:
+                required_authority_identity_fields = [
+                    "run_id",
+                    "project_root_ref",
+                    "project_identity_digest",
+                    "vcs_identity",
+                    "cwd_root_binding",
+                    "goal_digest",
+                    "source_digest",
+                    "stage_graph_digest",
+                    "schema_version",
+                    "policy_version",
+                    "prompt_version",
+                    "validator_version",
+                    "authority_revision",
+                    "authority_epoch",
+                    "last_writer_id",
+                    "status",
+                    "supersedes",
+                    "superseded_by",
+                    "cas_transition_ref",
+                ]
+                for key in required_authority_identity_fields:
+                    value = record_value(authority_path, key)
+                    if key in {"supersedes", "superseded_by"}:
+                        if value == "":
+                            errors.append(f"verified terminal stop authority record must have {key}")
+                    elif is_noneish(value):
+                        errors.append(f"verified terminal stop authority record must have {key}")
+                if not record_value_matches(authority_path, "status", "completed"):
+                    errors.append("verified terminal stop authority record must have status=completed")
+                if not record_value_matches(authority_path, "cas_transition", "active_to_completed"):
+                    errors.append("verified terminal stop authority record must record cas_transition=active_to_completed")
+                if not record_value_matches(authority_path, "cas_result", "success"):
+                    errors.append("verified terminal stop authority record must record cas_result=success")
+                if not record_value_matches(authority_path, "cas_expected_status", "active"):
+                    errors.append("verified terminal stop authority record must record cas_expected_status=active")
+                if not record_value_matches(authority_path, "cas_target_status", "completed"):
+                    errors.append("verified terminal stop authority record must record cas_target_status=completed")
+                if not record_value_matches(authority_path, "cas_expected_authority_revision", run_authority_revision):
+                    errors.append("verified terminal stop authority record must record matching cas_expected_authority_revision")
+                if not record_value_matches(authority_path, "cas_expected_authority_epoch", run_authority_epoch):
+                    errors.append("verified terminal stop authority record must record matching cas_expected_authority_epoch")
+                cas_transition_ref = record_value(authority_path, "cas_transition_ref")
+                cas_transition_path = resolve_artifact_ref(cas_transition_ref, run_dir)
+                if not cas_transition_receipt_is_valid(
+                    cas_transition_path,
+                    run_dir=run_dir,
+                    authority_record_ref=authority_record_ref,
+                    authority_path=authority_path,
+                    run_authority_revision=run_authority_revision,
+                    run_authority_epoch=run_authority_epoch,
+                ):
+                    errors.append("verified terminal stop authority record must have a valid CAS transition receipt")
+            for key, expected in {
+                "authority_record_ref": authority_record_ref,
+                "authority_revision": run_authority_revision,
+                "authority_epoch": run_authority_epoch,
+                "source_digest": source_digest_field,
+                "adapter_manifest_ref": adapter_manifest_ref,
+                "adapter_effective_config_digest": adapter_effective_config_digest,
+                "completion_subject_type": completion_subject_type,
+                "completion_subject_digest": completion_subject_digest,
+                "stage_graph_digest": stage_graph_digest,
+                "challenge_cycle_ref": challenge_cycle_ref,
+                "challenge_cycle_digest_set": challenge_cycle_digest_set,
+            }.items():
+                if not proof_token_matches(goal_completion_evidence, key, expected):
+                    errors.append(f"verified terminal stop goal_completion_evidence must bind {key}={expected}")
+                if stop_status == "allow" and not proof_token_matches(stop_consensus_evidence_text, key, expected):
+                    errors.append(f"verified terminal stop stop_consensus_evidence must bind {key}={expected}")
+    if (
+        implementation_like_intent
+        and terminal_verified_stop
+        and risk_tier in {"tier1_local", "tier2_material", "tier3_high_risk"}
+        and implementation_gate_status != "accepted"
+        and not explicit_user_stop_override
+    ):
+        errors.append("implementation verified terminal stops require implementation_gate_status=accepted")
+    if (
+        implementation_gate_status == "accepted"
+        and not implementation_gate_mini_requirement_is_satisfied(
+            implementation_gate_evidence,
+            run_dir,
+            risk_tier,
+            authority_path=resolve_artifact_ref(authority_record_ref, run_dir),
+        )
+    ):
+        errors.append(
+            "accepted implementation gates require mandatory 2-lane pre/post plan validation "
+            "with strategy_ref, verification_agent_ref, exact practical viewpoint sets, unanimous verdicts, and resolvable in-run artifacts; "
+            "tier0_trivial/tier1_local deterministic paths may use an explicit mini_plan_validation_skip with local_verification and skip_scope_evidence, "
+            "tier1 may use structured tier1_self_check evidence, "
+            "while not_classified accepted gates must prove file_changing_batch=false"
+        )
+    if risk_tier in {"tier2_material", "tier3_high_risk"}:
+        if terminal_verified_stop and implementation_gate_status != "accepted":
+            errors.append("tier2/tier3 verified terminal stops require implementation_gate_status=accepted")
+        if implementation_gate_status == "accepted":
+            if not implementation_gate_evidence_is_valid(
+                implementation_gate_evidence,
+                run_dir,
+                authority_path=resolve_artifact_ref(authority_record_ref, run_dir),
+            ):
+                errors.append(
+                    "tier2/tier3 accepted implementation gates require strategy_ref, 5-lane pre/post challenge refs, "
+                    "exact viewpoint sets, unanimous verdicts, and resolvable in-run artifacts"
+                )
     continue_attempt_ref = extract_attempt_ref(continue_exit_evidence)
 
     if implementation_like_intent and continuation_mode != "nonstop":
@@ -2038,7 +5532,7 @@ def validate_fields(
             f"stop_consensus_status=allow_unanimous requires explicit stop_authorization phase "
             f"{REQUIRED_DELEGATED_AGENT_COUNT}-agent proof in stop_consensus_evidence"
         )
-    if stop_round_id and challenge_round_id_seen_in_receipts(run_dir, stop_round_id):
+    if stop_round_id and challenge_round_id_seen_in_receipts(run_dir, stop_round_id) and not resume_state:
         errors.append("stop_consensus_evidence challenge_round_id was already used in a prior closeout receipt; challenge rounds must be fresh and non-reusable")
     if stop_consensus_status in {"allow_unanimous", "waived_external_authority"} and is_noneish(fields["stop_consensus_evidence"]):
         errors.append("stop_consensus_status requires concrete stop_consensus_evidence")
@@ -2054,8 +5548,30 @@ def validate_fields(
             f"goal_completion_status={VERIFIED_COMPLETE_STATUS} requires explicit goal_completion phase "
             f"{REQUIRED_DELEGATED_AGENT_COUNT}-agent proof in goal_completion_evidence"
         )
-    if goal_round_id and challenge_round_id_seen_in_receipts(run_dir, goal_round_id):
+    if goal_round_id and challenge_round_id_seen_in_receipts(run_dir, goal_round_id) and not resume_state:
         errors.append("goal_completion_evidence challenge_round_id was already used in a prior closeout receipt; completion rounds must be fresh and non-reusable")
+
+    if requires_approval_or_no_action_challenge(fields) and not has_stop_authorization_challenge_attempt(
+        fields["stop_consensus_evidence"],
+        run_dir,
+        closeout_round_id,
+    ):
+        errors.append(
+            f"approval/no-bounded-action/blocker closeouts require a fresh {REQUIRED_DELEGATED_AGENT_COUNT}-lane "
+            "stop_authorization challenge attempt before yielding or treating the blocker as terminal"
+        )
+
+    if (
+        run_decision == "stop"
+        and implementation_like_intent
+        and source_requests_plan_execution(source_path)
+        and not explicit_user_stop_override
+        and not goal_completion_evidence_has_implementation_authority(goal_completion_evidence, run_dir)
+    ):
+        errors.append(
+            "roadmap-derived implementation stops require goal_completion_evidence to record "
+            "implementation_authority_ref=<revised-plan.md|handoff.md|implementation-authority/...>"
+        )
 
     if run_decision == "continue":
         if loop_state in {"paused", "stopped"}:
@@ -2198,6 +5714,8 @@ def validate_fields(
             errors.append("run_decision=pause requires loop_state=paused")
         if run_decision == "stop" and loop_state != "stopped":
             errors.append("run_decision=stop requires loop_state=stopped")
+        if run_decision == "stop" and not is_noneish(remaining_required_stages) and not explicit_user_stop_override:
+            errors.append("run_decision=stop is illegal while remaining_required_stages is non-empty")
         if run_decision == "stop" and sequential_status == "open" and not explicit_user_stop_override:
             errors.append("run_decision=stop is illegal while sequential_objectives_status=open")
         if require_consensus and stop_status == "not_run":
@@ -2242,7 +5760,7 @@ def validate_fields(
                 )
 
             if external_basis == "host_turn_boundary":
-                if is_delegated_quota_blocker(continue_exit_evidence, pause_reason):
+                if is_delegated_quota_blocker(continue_exit_evidence, pause_reason, blocking_findings_text):
                     errors.append(
                         "delegated-agent quota blockers must use run_decision=continue with "
                         "continue_exit_status=blocked_during_attempt and auto-resume; they are not host-boundary pause authority"
@@ -2337,8 +5855,8 @@ def validate_fields(
             errors.append("external_authority may not be justified by inferred closure phrasing in pause_reason")
         if any(re.search(pattern, stop_evidence) for pattern in INFERRED_AUTHORITY_PATTERNS):
             errors.append("external_authority may not be justified by inferred closure phrasing in stop_authorization_evidence")
-        if external_basis == "human_decision_required" and "human_decision_gate=unresolved_after_5_codex" not in stop_evidence:
-            errors.append("human_decision_required requires stop_authorization_evidence to record human_decision_gate=unresolved_after_5_codex")
+        if external_basis == "human_decision_required" and "human_decision_gate=unresolved_after_3_codex" not in stop_evidence:
+            errors.append("human_decision_required requires stop_authorization_evidence to record human_decision_gate=unresolved_after_3_codex")
         if external_basis == "host_turn_boundary" and host_resume_mode != "same_turn_only":
             errors.append("external_authority_basis=host_turn_boundary requires host_resume_mode=same_turn_only")
         if external_basis == "explicit_user_pause":

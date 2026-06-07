@@ -23,24 +23,24 @@ const VIEWPOINT_PROFILES = {
 
 const VIEWPOINT_FOCUS = {
   architecture_dependency: [
-    'map coupling, ownership seams, dependency order, and cross-cutting modules',
-    'surface hidden prerequisites or architecture constraints that should change the stage boundary',
+    'map coupling, ownership boundaries, dependency order, cross-cutting modules, and hidden prerequisites',
+    'surface architecture constraints or dependency risks that should change the stage boundary',
   ],
   failure_verification: [
     'look for regression paths, unsafe assumptions, missing checks, and verification blind spots',
     'focus on how the current goal or plan could fail in production or during rollout',
   ],
   goal_efficiency: [
-    'search for shorter paths, leverage points, reuse opportunities, and lower-risk sequencing',
-    'push against overscope, ceremonial steps, and low-yield work',
+    'look for the shortest safe path to the real goal, avoid waste, and identify low-yield stages',
+    'surface bottlenecks, unnecessary work, and better sequencing choices',
   ],
   requirement_alignment: [
-    'compare the current state against the explicit user ask, success conditions, and sequential objectives',
+    'compare the current state against the explicit user ask, success conditions, sequential objectives, and shortest safe path',
     'surface scope drift, missed required behavior, Korean/user-facing copy mismatches, and unclosed acceptance criteria',
   ],
   implementation_quality: [
-    'review maintainability, test coverage, error handling, data integrity, and production-readiness risks',
-    'focus on whether the implementation can be safely carried forward without hidden cleanup or fragile assumptions',
+    'evaluate maintainability, test coverage, error handling, production-readiness, and quality of the planned or completed implementation',
+    'surface implementation-quality issues that should change the plan, verification, or acceptance decision',
   ],
 }
 
@@ -69,7 +69,7 @@ function usage() {
   console.error(
     [
       'Usage:',
-      '  node <agent-loop-skill-dir>/scripts/run-claude-research.mjs --workspace <path> [options]',
+      '  node <skill-dir>/scripts/run-claude-research.mjs --workspace <path> [options]',
       '',
       'Required:',
       '  --workspace <path>              Workspace root Claude should inspect',

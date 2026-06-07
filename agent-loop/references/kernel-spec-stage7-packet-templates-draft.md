@@ -3,8 +3,11 @@
 These references are non-authoritative maintainer appendices. They may explain lower-level lifecycle or packet detail, but they do not add, widen, or override the public operator contract in `SKILL.md`.
 
 > Note:
-> In normal `$loop` use, the default delegated Codex mix is 5 lanes; optional Claude evidence is capped to those same 5 viewpoints, and high-difficulty work stays capped at 5 lanes.
-> These packet templates use the current 5-viewpoint execution mix.
+> In normal `$loop` use, material research uses five delegated Codex lanes.
+> Non-final challenge/verification phases use the current 5-lane distinct
+> execution mix. Optional Claude evidence mirrors the phase-required Codex lane
+> set. Final halt and completion template sets require the five-lane Codex proof
+> described below.
 
 This draft turns the validated Stage 6 packet contract into concrete reusable packet templates.
 
@@ -30,8 +33,13 @@ Stage 7 is valid only when:
 
 ## Template Rules
 
-- All templates assume `model_policy=resolved_strongest_hard_pin`.
-- All template-driven delegated dispatches must copy `resolved_model_slug` and `resolved_reasoning_effort` onto the actual `spawn_agent` tool call. Template fields alone do not satisfy the model-pin contract.
+- All templates assume `model_policy=gpt_5_5_high_minimum_explicit`.
+- All template-driven delegated dispatches must copy the explicit lane
+  `resolved_model_slug` and `resolved_reasoning_effort` onto the actual
+  `spawn_agent` tool call. Template fields alone do not satisfy the model-pin
+  contract. Plan-authority templates require the strongest available Codex
+  model, and halt/completion template sets require three `gpt-5.5/xhigh` lanes
+  plus two `gpt-5.5/high` lanes across the five artifacts.
 - Templates must be fillable from authoritative refs plus small derived views.
 - Templates may carry short operator notes, but not transcript replay.
 - Templates must separate:
@@ -48,7 +56,7 @@ Stage 7 is valid only when:
 packet_envelope:
   packet_id: <generated>
   packet_kind: <research_packet|planning_packet|challenge_packet|worker_packet|verification_packet|integration_packet>
-  model_policy: resolved_strongest_hard_pin
+  model_policy: gpt_5_5_high_minimum_explicit
   resolved_model_slug: <resolved_model_slug>
   resolved_reasoning_effort: <resolved_reasoning_effort>
   model_resolution_basis_ref: <model_resolution_basis_ref>
@@ -148,9 +156,9 @@ completion_gate:
 
 Research phase consolidation rule:
 
-- exactly five delegated `research_packet` lanes must run per research phase, one per
-  `architecture_dependency`, `failure_verification`, `goal_efficiency`,
-  `requirement_alignment`, and `implementation_quality`
+- exactly five delegated `research_packet` lanes must run per material research
+  phase, using `architecture_dependency`, `failure_verification`,
+  `goal_efficiency`, `requirement_alignment`, and `implementation_quality`
 - before any `planning_packet` or run-level stop/continue decision may consume fresh research, the
   main CLI must assemble a merged `research_synthesis_candidate` with:
   - `synthesis_mode=merged`
@@ -244,10 +252,11 @@ packet_envelope:
   packet_kind: challenge_packet
 authoritative_inputs:
   handoff_or_bootstrap_ref: <handoff_ref|bootstrap_ref>
-  phase: <planning_phase|verify_phase>
-  challenge_review_mode: <plan_review|verify_current_pass|post_close_revalidation|cold_start_revalidation>
+  phase: <planning_phase|verify_phase|stop_authorization|goal_completion>
+  agent_role: challenge_agent
+  challenge_review_mode: <plan_review|verify_current_pass|post_close_revalidation|cold_start_revalidation|autonomous_stop_challenge|goal_completion_challenge>
   viewpoint: <architecture_dependency|failure_verification|goal_efficiency|requirement_alignment|implementation_quality>
-  review_target_ref: <revised_plan_candidate_ref|verification_candidate_ref|evidence_packet_ref>
+  review_target_ref: <revised_plan_candidate_ref|verification_candidate_ref|evidence_packet_ref|source_first_completion_claim_ref>
   active_plan_snapshot_id_ref: <plan_snapshot_id_ref|none_yet>
   active_target_fingerprint_ref: <target_fingerprint_ref>
   gate_refs: <gate_refs>
@@ -258,6 +267,10 @@ review_target_rules:
   - `revised_plan_candidate_ref` is legal only in `phase=planning_phase` with `challenge_review_mode=plan_review`
   - `verification_candidate_ref` is the default legal target in `phase=verify_phase` with `challenge_review_mode=verify_current_pass`
   - `evidence_packet_ref` is legal only in `phase=verify_phase` with `challenge_review_mode=post_close_revalidation|cold_start_revalidation`
+  - `source_first_completion_claim_ref` is legal only in `phase=stop_authorization|goal_completion`
+  - `agent_role` must be `challenge_agent`; final halt/completion lanes cannot use worker, explorer, summarizer, or generic reviewer roles
+  - `autonomous_stop_challenge` is legal only in `phase=stop_authorization`
+  - `goal_completion_challenge` is legal only in `phase=goal_completion`
   - `active_plan_snapshot_id_ref=none_yet` is legal only in `phase=planning_phase` with `challenge_review_mode=plan_review` before the first `integrate_plan` seal of the cycle
   - `evidence_packet_ref` must match the active `plan_snapshot_id` and `target_fingerprint`
 role_objective:
@@ -273,6 +286,7 @@ required_outputs:
   packet_kind: challenge_result_candidate
   fields:
     - phase
+    - agent_role
     - challenge_review_mode
     - viewpoint
     - review_target_ref
@@ -407,6 +421,8 @@ authoritative_inputs:
       architecture_dependency: <ref|required_for_integrate_plan_or_integrate_verify>
       failure_verification: <ref|required_for_integrate_plan_or_integrate_verify>
       goal_efficiency: <ref|required_for_integrate_plan_or_integrate_verify>
+      requirement_alignment: <ref|required_for_integrate_plan_or_integrate_verify>
+      implementation_quality: <ref|required_for_integrate_plan_or_integrate_verify>
     verification_candidate_ref: <ref|required_for_integrate_verify_current_pass|omit_for_revalidation_subcases>
     worker_delta_candidate_refs: <refs|omit>
   fixed_cycle_close_decision_ref: <ref|omit_when_not_cycle_decision>

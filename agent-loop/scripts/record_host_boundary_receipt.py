@@ -35,6 +35,10 @@ def main() -> int:
         "--event-id",
         help="Optional stable event id; defaults to a UTC timestamped host-boundary id",
     )
+    parser.add_argument(
+        "--event-id-source",
+        help="Optional event id provenance; defaults to provided_event_id when --event-id is set, otherwise controller_generated_same_turn_boundary",
+    )
     args = parser.parse_args()
 
     run_dir = Path(args.run_dir).resolve()
@@ -63,7 +67,10 @@ def main() -> int:
         return 1
 
     timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-    event_id = clean_value(args.event_id) or f"{timestamp}-host-boundary"
+    event_id = clean_value(args.event_id or "") or f"{timestamp}-host-boundary"
+    event_id_source = clean_value(args.event_id_source or "")
+    if not event_id_source:
+        event_id_source = "provided_event_id" if clean_value(args.event_id or "") else "controller_generated_same_turn_boundary"
 
     authority_dir = run_dir / "authority"
     authority_dir.mkdir(parents=True, exist_ok=True)
@@ -75,6 +82,7 @@ def main() -> int:
                 "authority_receipt_version=v1",
                 "authority_kind=host_turn_boundary",
                 f"event_id={event_id}",
+                f"event_id_source={event_id_source}",
                 f"closeout_round_id={closeout_round_id}",
                 f"attempt_ref={attempt_ref}",
                 f"excerpt={evidence}",

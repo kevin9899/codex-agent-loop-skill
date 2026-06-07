@@ -1,4 +1,4 @@
-# codex-agent-loop-skill
+﻿# codex-agent-loop-skill
 
 `agent-loop` Codex 스킬을 설치하기 위한 공개 GitHub 저장소입니다.
 
@@ -30,7 +30,7 @@
 ### Bash / zsh
 
 ```bash
-REF=v0.2.0
+REF=v0.2.1
 python "${CODEX_HOME:-$HOME/.codex}/skills/.system/skill-installer/scripts/install-skill-from-github.py" \
   --repo kevin9899/codex-agent-loop-skill \
   --ref "$REF" \
@@ -40,7 +40,7 @@ python "${CODEX_HOME:-$HOME/.codex}/skills/.system/skill-installer/scripts/insta
 ### PowerShell
 
 ```powershell
-$ref = "v0.2.0"
+$ref = "v0.2.1"
 $codexHome = if ($env:CODEX_HOME) { $env:CODEX_HOME } else { Join-Path $HOME ".codex" }
 python (Join-Path $codexHome "skills/.system/skill-installer/scripts/install-skill-from-github.py") `
   --repo kevin9899/codex-agent-loop-skill `
@@ -52,7 +52,7 @@ python (Join-Path $codexHome "skills/.system/skill-installer/scripts/install-ski
 
 ```bash
 python "${CODEX_HOME:-$HOME/.codex}/skills/.system/skill-installer/scripts/install-skill-from-github.py" \
-  --url https://github.com/kevin9899/codex-agent-loop-skill/tree/v0.2.0/agent-loop
+  --url https://github.com/kevin9899/codex-agent-loop-skill/tree/v0.2.1/agent-loop
 ```
 
 ### 수동 복사 대안

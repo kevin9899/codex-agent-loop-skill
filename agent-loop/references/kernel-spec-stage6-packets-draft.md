@@ -3,10 +3,13 @@
 These references are non-authoritative maintainer appendices. They may explain lower-level lifecycle or packet detail, but they do not add, widen, or override the public operator contract in `SKILL.md`.
 
 > Note:
-> In normal `$loop` use, the default delegated Codex mix is 5 viewpoints:
-> `architecture_dependency`, `failure_verification`, `goal_efficiency`,
-> `requirement_alignment`, and `implementation_quality`. Optional Claude
-> evidence is capped to those same 5 viewpoints and remains explicit opt-in.
+> In normal `$loop` use, material initial research uses five delegated Codex
+> lanes: `architecture_dependency`, `failure_verification`, `goal_efficiency`,
+> `requirement_alignment`, and `implementation_quality`. Non-final
+> challenge/verification phases use the five distinct challenge lanes
+> described below. Optional Claude evidence mirrors the phase-required lane set
+> and remains explicit opt-in. Final halt and completion require the five-lane
+> Codex proof described below.
 
 This draft turns the validated Stage 1-5 kernel into minimal role packets.
 
@@ -34,8 +37,11 @@ Stage 6 is valid only when:
 
 ## Global Packet Rules
 
-- Before any delegated packet is emitted, the controller resolves one concrete strongest-model pin from the local runtime config plus the current local model catalog.
-- All delegated lanes use that exact resolved hard pin for the full live invocation unless the runtime model catalog changes before dispatch.
+- Before any delegated packet is emitted, the controller resolves one explicit lane model from the local runtime config plus the current local model catalog.
+- All delegated lanes must use `gpt-5.5/high` or stronger. 5.4, Spark, 5.3, mini-model, `low`, and `medium` packets are inadmissible.
+- Plan-authority packets must use the strongest available Codex model, currently `gpt-5.5/xhigh`.
+- Halt/completion packets may mix reasoning effort, but all five lanes must be
+  at least `gpt-5.5/high`: three `gpt-5.5/xhigh` and two `gpt-5.5/high`.
 - Emitting a packet is not sufficient by itself; the matching delegated `spawn_agent` call must also carry the same concrete `model` and `reasoning_effort` fields.
 - The main CLI thread owns orchestration and may consume packet outputs, but it does not relax packet authority.
 - Packets may reference only authoritative artifacts or explicitly named draft candidates from the current lane.
@@ -52,7 +58,7 @@ Every delegated packet must carry at least:
 
 - `packet_id`
 - `packet_kind`
-- `model_policy=resolved_strongest_hard_pin`
+- `model_policy=gpt_5_5_high_minimum_explicit`
 - `resolved_model_slug`
 - `resolved_reasoning_effort`
 - `model_resolution_basis_ref`
@@ -76,12 +82,12 @@ Required common rules:
 - `authoritative_handoff_ref` must point to the latest sealed `handoff_packet`, except in `dispatch_mode=bootstrap` before the first seal where it must be `none_yet`
 - `request_intent_ref` must point to the immutable per-run explicit-user-request artifact, not to source-document wording
 - `request_intent_ref` must be one of `planning_deliverable_only|end_to_end_progress`
-- `model_policy` must be `resolved_strongest_hard_pin`
-- `resolved_model_slug` and `resolved_reasoning_effort` must be concrete whenever the controller successfully resolved the current strongest model pin before dispatch
-- all delegated packets in the same live invocation must carry the same `resolved_model_slug` and `resolved_reasoning_effort` unless the runtime model catalog changes before the next dispatch
+- `model_policy` must be `gpt_5_5_high_minimum_explicit`
+- `resolved_model_slug` and `resolved_reasoning_effort` must be concrete whenever the controller successfully resolved the lane model before dispatch
+- all delegated packets must carry an allowed explicit lane model; halt/completion proof must show the required five-lane model mix across the five artifacts
 - the delegated `spawn_agent` call that consumes the packet must pass `model=<resolved_model_slug>` and `reasoning_effort=<resolved_reasoning_effort>` explicitly
 - halt/completion proof for the lane must record the matching `spawn_tool_args_model`, `spawn_tool_args_reasoning_effort`, and a concrete `spawn_tool_call_ref`
-- any delegated output produced without the packet's concrete model pin, or on a weaker model/effort pair, is inadmissible
+- any delegated output produced without the packet's concrete model pin, on 5.4/Spark/5.3/mini, with `low`/`medium` reasoning effort, or on a weaker-than-5.5/high model/effort pair is inadmissible
 - `authoritative_inputs` must name exact artifact refs, not prose descriptions alone
 - `forbidden_actions` must include any controller mutation the role is not allowed to perform
 - `completion_gate` must be checkable from the packet output alone
@@ -119,8 +125,8 @@ No other delegated packet kind is required at Stage 6.
 - after each cycle close through `commit|rescope|escalate`
 - after a full current plan is exhausted
 
-Exactly five `research_packet` emissions must occur per research phase, one per
-`research_viewpoint`:
+Exactly five `research_packet` emissions must occur per material research
+phase, one per `research_viewpoint`:
 
 - `architecture_dependency`
 - `failure_verification`
@@ -128,10 +134,13 @@ Exactly five `research_packet` emissions must occur per research phase, one per
 - `requirement_alignment`
 - `implementation_quality`
 
-The first `research_packet` pass is mandatory regardless of source shape. A source packet that
-already looks like a plan, roadmap, authority note, or implementation checklist still enters the
-same initial `ideation -> research -> planning -> challenge -> integrate_plan` path before any
-execution-stage dispatch becomes legal.
+The first material `research_packet` pass is mandatory unless a
+validator-recognized tier0/tier1 deterministic fast path or ordinary
+`tier1_local` self-check path applies. A source packet that already looks like a
+plan, roadmap, authority note, or implementation checklist still enters the same
+initial `ideation -> research -> planning -> challenge -> integrate_plan` path
+before any execution-stage dispatch becomes legal unless one of those strict
+local exceptions is recorded.
 
 ### Required Inputs
 
@@ -313,9 +322,10 @@ preparatory-only endpoints, or narrowed success conditions must be corrected in 
 
 ## Challenge Packet
 
-`challenge_packet` is used for both plan challenge and verify challenge.
+`challenge_packet` is used for plan challenge and verify challenge.
 
-Exactly five challenge packets must be emitted per challenge phase, one per viewpoint:
+Exactly five challenge packets must be emitted per challenge phase, one per
+distinct viewpoint:
 
 - `architecture_dependency`
 - `failure_verification`
@@ -326,13 +336,15 @@ Exactly five challenge packets must be emitted per challenge phase, one per view
 ### Required Inputs
 
 - latest sealed `handoff_packet` or bootstrap context when `authoritative_handoff_ref=none_yet`
-- `phase=planning_phase|verify_phase`
+- `phase=planning_phase|verify_phase|stop_authorization|goal_completion`
 - authoritative `challenge_review_mode`
+- `agent_role=challenge_agent`
 - `viewpoint`
 - one authoritative or lane-local review target:
   - `revised_plan_candidate` only when `phase=planning_phase` and `challenge_review_mode=plan_review`
   - `verification_candidate` by default when `phase=verify_phase` and `challenge_review_mode=verify_current_pass`
   - authoritative `evidence_packet` only when `phase=verify_phase` and `challenge_review_mode=post_close_revalidation|cold_start_revalidation`, and only when it matches the active `plan_snapshot_id` and `target_fingerprint`
+  - clean `source.md` plus current implementation-claim artifacts only when `phase=stop_authorization|goal_completion`; these final phases require the five-packet final viewpoint set above
 - applicable gate set
 - accepted constraints and dependencies
 
@@ -342,10 +354,16 @@ Exactly five challenge packets must be emitted per challenge phase, one per view
 - `verify_current_pass`
 - `post_close_revalidation`
 - `cold_start_revalidation`
+- `autonomous_stop_challenge`
+- `goal_completion_challenge`
 
 `plan_review` is legal only in `planning_phase`.
 
 `verify_current_pass|post_close_revalidation|cold_start_revalidation` are legal only in `verify_phase`.
+
+`autonomous_stop_challenge` is legal only in `phase=stop_authorization`.
+
+`goal_completion_challenge` is legal only in `phase=goal_completion`.
 
 ### Required Outputs
 
@@ -354,6 +372,7 @@ Exactly five challenge packets must be emitted per challenge phase, one per view
 That candidate must contain at least:
 
 - `phase`
+- `agent_role=challenge_agent`
 - `challenge_review_mode`
 - `viewpoint`
 - `review_target_ref`
@@ -491,7 +510,7 @@ It is the only packet allowed to prepare barrier-scoped authority changes.
 - candidate artifacts relevant to the current seal point:
   - merged `research_synthesis_candidate` with exact `research_viewpoint_set={architecture_dependency,failure_verification,goal_efficiency,requirement_alignment,implementation_quality}` when `seal_point=integrate_plan|goal_reassessment`
   - `revised_plan_candidate`
-  - `challenge_result_candidates` as an exact five-item set keyed by `architecture_dependency`, `failure_verification`, `goal_efficiency`, `requirement_alignment`, and `implementation_quality` when `seal_point=integrate_plan|integrate_verify`; when `seal_point=integrate_verify`, exactly one legal subcase must hold:
+  - `challenge_result_candidates` as an exact five-item set keyed by `architecture_dependency`, `failure_verification`, `goal_efficiency`, `requirement_alignment`, and `implementation_quality` when `seal_point=integrate_plan|integrate_verify`; material research itself is the exact five-lane set above. When `seal_point=integrate_verify`, exactly one legal subcase must hold:
     - current-pass subcase: concrete `verification_candidate`, and each candidate carries `phase=verify_phase`, `challenge_review_mode=verify_current_pass`, and `review_target_ref` equal to the current `verification_candidate`
     - revalidation subcase: concrete authoritative `evidence_packet_ref`, and each candidate carries `phase=verify_phase`, `challenge_review_mode=post_close_revalidation|cold_start_revalidation`, and `review_target_ref` equal to that authoritative `evidence_packet_ref`
   - concrete `verification_candidate` only for the `integrate_verify` current-pass subcase

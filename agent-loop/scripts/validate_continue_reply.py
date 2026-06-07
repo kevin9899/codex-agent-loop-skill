@@ -30,17 +30,29 @@ REQUIRED_FIELDS = [
 TAIL_FIELDS = [
     "active_delta=",
     "stop_status=",
+    "user_visible_note=",
+    "final_copy_policy=",
     "forced_boundary_note=",
     "host_boundary_effect=",
     "auto_resume_trigger=",
     "followup_resume_policy=",
     "resume_command=",
     "blocking_or_risk=",
+    "user_visible_status_ko=",
+    "blocked_action_ko=",
+    "needed_condition_ko=",
+    "human_readable_reason=",
 ]
 
 TAIL_ORDER = [
     "active_delta=",
+    "user_visible_status_ko=",
+    "blocked_action_ko=",
+    "needed_condition_ko=",
+    "human_readable_reason=",
     "stop_status=",
+    "user_visible_note=",
+    "final_copy_policy=",
     "forced_boundary_note=",
     "host_boundary_effect=",
     "auto_resume_trigger=",
@@ -153,9 +165,53 @@ COMPOUND_NEXT_ACTION_PATTERNS = [
 ]
 
 FORCED_BOUNDARY_NOTE = (
-    "호스트 때문에 보이는 답변만 한번 끊겼고 루프는 멈추지 않았습니다. "
-    "아무 후속 메시지나 보내면 같은 run을 즉시 이어갑니다."
+    "호스트가 백그라운드 실행을 이어주지 않아 final 채널로 경계 영수증을 남긴 것입니다. "
+    "루프는 목표 완료/정지로 처리되지 않았고, 아무 후속 메시지나 보내면 같은 run을 즉시 이어갑니다."
 )
+USER_VISIBLE_CONTINUE_NOTE = (
+    "사용자 표시용: 멈춘 게 아니라 호스트가 보이는 답변만 한 번 끊은 상태입니다. "
+    "다음 메시지는 같은 run 자동 재개 신호입니다."
+)
+FINAL_COPY_POLICY = "copy_closeout_gate_stdout_verbatim_no_summary_no_omission"
+USER_VISIBLE_STATUS_KO = (
+    "멈춘 것이 아닙니다. final 채널에 남긴 강제 턴 경계 영수증이며, "
+    "아무 후속 메시지나 보내면 같은 run을 자동 재개합니다."
+)
+VAGUE_BLOCKER_KO_PATTERNS = [
+    r"확인\s*필요",
+    r"대기",
+    r"나중에",
+    r"추후",
+    r"언젠가",
+]
+EXTERNAL_GATE_ONLY_PATTERNS = [
+    r"\bno bounded local actions? remain\b",
+    r"\bno local actions? remain\b",
+    r"\bexternal[- ]only\b",
+    r"\bexternal gate\b",
+    r"\bhuman decision\b",
+    r"\bexplicit mutation authority\b",
+    r"\bbranch[- ]protection mutation authority\b",
+    r"\bstable green\b",
+    r"\brequired_status_checks\b",
+    r"\bruleset\b",
+    r"외부 조건",
+    r"외부 게이트",
+    r"로컬 작업.*없",
+    r"명시적인.*권한",
+]
+
+USER_HANDBACK_PATTERNS = [
+    r"\buser must\b",
+    r"\buser needs to\b",
+    r"\buser has to\b",
+    r"\bhave the user\b",
+    r"\bask the user\b",
+    r"\bwait for the user\b",
+    r"사용자가\s*.*(해야|종료|승인|제공|처리)",
+    r"사용자\s*(종료|승인|제공|처리|대기)",
+    r"유저가\s*.*(해야|종료|승인|제공|처리)",
+]
 
 
 def load_text(path_arg: str | None) -> str:
@@ -228,7 +284,9 @@ def contains_closure_scent(text: str) -> bool:
 def contains_forbidden_tail_closure_scent(field_name: str, text: str) -> bool:
     if field_name in {
         "stop_status",
+        "user_visible_note",
         "forced_boundary_note",
+        "user_visible_status_ko",
         "host_boundary_effect",
         "auto_resume_trigger",
         "followup_resume_policy",
@@ -244,6 +302,25 @@ def contains_active_delta_action(text: str) -> bool:
 
 def is_compound_next_action(text: str) -> bool:
     return any(re.search(pattern, text, flags=re.IGNORECASE) for pattern in COMPOUND_NEXT_ACTION_PATTERNS)
+
+
+def contains_korean(text: str) -> bool:
+    return bool(re.search(r"[가-힣]", text))
+
+
+def contains_vague_blocker_ko(text: str) -> bool:
+    return any(re.search(pattern, text, flags=re.IGNORECASE) for pattern in VAGUE_BLOCKER_KO_PATTERNS)
+
+
+def contains_user_handback(text: str) -> bool:
+    return any(re.search(pattern, text, flags=re.IGNORECASE) for pattern in USER_HANDBACK_PATTERNS)
+
+
+def is_external_gate_only_continue(*values: str) -> bool:
+    combined = " ".join(clean_value(value).lower() for value in values if clean_value(value))
+    if not combined:
+        return False
+    return any(re.search(pattern, combined, flags=re.IGNORECASE) for pattern in EXTERNAL_GATE_ONLY_PATTERNS)
 
 
 def validate_run_dir(run_dir_arg: str, lines: list[str]) -> list[str]:
@@ -330,10 +407,22 @@ def validate_run_dir(run_dir_arg: str, lines: list[str]) -> list[str]:
         reply_semantic_state = clean_value(extract_field_value(lines[2]))
         if host_resume_mode == "same_turn_only" and reply_semantic_state != "incomplete_forced_boundary":
             errors.append("same_turn_only continue replies require semantic_state=incomplete_forced_boundary")
+        if (
+            host_resume_mode != "same_turn_only"
+            and continue_exit_status == "blocked_during_attempt"
+            and reply_semantic_state not in {"incomplete_blocked_pending_external", "incomplete_blocked_pending_human"}
+        ):
+            errors.append("durable blocked continue replies require semantic_state=incomplete_blocked_pending_*")
 
         reply_continuation_authority = clean_value(extract_field_value(lines[3]))
-        if reply_continuation_authority != "standing":
-            errors.append("continue replies require continuation_authority=standing")
+        if host_resume_mode == "same_turn_only" and reply_continuation_authority != "standing":
+            errors.append("same_turn_only continue replies require continuation_authority=standing")
+        if (
+            host_resume_mode != "same_turn_only"
+            and continue_exit_status == "blocked_during_attempt"
+            and reply_continuation_authority not in {"blocked_pending_external", "blocked_pending_human"}
+        ):
+            errors.append("durable blocked continue replies require continuation_authority=blocked_pending_*")
 
         reply_stage = clean_value(extract_field_value(lines[4]))
         handoff_stage = clean_value(str(fields.get("current_or_next_stage", "")))
@@ -360,6 +449,23 @@ def validate_run_dir(run_dir_arg: str, lines: list[str]) -> list[str]:
     if continue_exit_status == "blocked_during_attempt":
         if not any(line.startswith("blocking_or_risk=") for line in lines[tail_start:]):
             errors.append("blocked_during_attempt requires a `blocking_or_risk=` line in the reply tail")
+        if not any(line.startswith("user_visible_status_ko=") for line in lines[tail_start:]):
+            errors.append("blocked_during_attempt requires a `user_visible_status_ko=` line before stop_status")
+        if not any(line.startswith("blocked_action_ko=") for line in lines[tail_start:]):
+            errors.append("blocked_during_attempt requires a `blocked_action_ko=` line before stop_status")
+        if not any(line.startswith("needed_condition_ko=") for line in lines[tail_start:]):
+            errors.append("blocked_during_attempt requires a `needed_condition_ko=` line before stop_status")
+        if not any(line.startswith("human_readable_reason=") for line in lines[tail_start:]):
+            errors.append("blocked_during_attempt requires a `human_readable_reason=` line before stop_status")
+        if is_external_gate_only_continue(
+            handoff_next_action,
+            continue_exit_evidence,
+            turn_exit_evidence,
+            clean_value(str(fields.get("blocking_findings", ""))),
+        ):
+            errors.append(
+                "external-gate-only blocked states may not emit auto-resume continue receipts; run completion proof and stop when source criteria allow, or encode a truthful external-gate pause"
+            )
 
     tail_fields: dict[str, str] = {}
     for line in lines[tail_start:]:
@@ -371,6 +477,42 @@ def validate_run_dir(run_dir_arg: str, lines: list[str]) -> list[str]:
     stop_status = tail_fields.get("stop_status", "")
     if stop_status != "not_stopped":
         errors.append("continue replies require `stop_status=not_stopped`")
+
+    if continue_exit_status == "blocked_during_attempt":
+        user_visible_status_ko = tail_fields.get("user_visible_status_ko", "")
+        if user_visible_status_ko != USER_VISIBLE_STATUS_KO:
+            errors.append("blocked_during_attempt replies require the exact explicit `user_visible_status_ko=` non-completion note")
+
+        blocked_action_ko = tail_fields.get("blocked_action_ko", "")
+        needed_condition_ko = tail_fields.get("needed_condition_ko", "")
+        human_readable_reason = tail_fields.get("human_readable_reason", "")
+        for field_name, value in {
+            "blocked_action_ko": blocked_action_ko,
+            "needed_condition_ko": needed_condition_ko,
+            "human_readable_reason": human_readable_reason,
+        }.items():
+            if is_noneish_text(value):
+                errors.append(f"blocked_during_attempt replies require a concrete `{field_name}=` value")
+            elif not contains_korean(value):
+                errors.append(f"`{field_name}=` must be Korean user-facing text")
+            elif contains_vague_blocker_ko(value):
+                errors.append(f"`{field_name}=` must name the concrete blocked action or condition, not vague timing text")
+            elif field_name in {"needed_condition_ko", "human_readable_reason"} and contains_user_handback(value):
+                errors.append(
+                    f"`{field_name}=` must describe a controller-owned retry/probe or a recorded no-bounded-action proof, not hand work back to the user"
+                )
+
+    user_visible_note = tail_fields.get("user_visible_note", "")
+    if user_visible_note != USER_VISIBLE_CONTINUE_NOTE:
+        errors.append(
+            "continue replies require the explicit user-facing `user_visible_note=` line"
+        )
+
+    final_copy_policy = tail_fields.get("final_copy_policy", "")
+    if final_copy_policy != FINAL_COPY_POLICY:
+        errors.append(
+            "continue replies require `final_copy_policy=copy_closeout_gate_stdout_verbatim_no_summary_no_omission`"
+        )
 
     if host_resume_mode == "same_turn_only":
         host_boundary_effect = tail_fields.get("host_boundary_effect", "")
@@ -493,10 +635,19 @@ def main() -> int:
                 errors.append("continue reply cannot use loop_state paused/stopped")
             if run_decision_value != "continue":
                 errors.append("run_decision line must be continue")
-            if semantic_state_value not in {"incomplete_forced_boundary", "in_progress_continue"}:
-                errors.append("semantic_state must be incomplete_forced_boundary or in_progress_continue")
-            if continuation_authority_value != "standing":
-                errors.append("continuation_authority must be standing")
+            if semantic_state_value not in {
+                "incomplete_forced_boundary",
+                "in_progress_continue",
+                "incomplete_blocked_pending_external",
+                "incomplete_blocked_pending_human",
+            }:
+                errors.append("semantic_state must be a valid incomplete continue state")
+            if continuation_authority_value not in {
+                "standing",
+                "blocked_pending_external",
+                "blocked_pending_human",
+            }:
+                errors.append("continuation_authority must be standing or blocked_pending_*")
             if is_noneish_text(current_stage_value):
                 errors.append("current_or_next_stage line must carry a live value")
             elif contains_closure_scent(current_stage_value):

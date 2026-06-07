@@ -10,8 +10,17 @@ from pathlib import Path
 from validate_handoff import clean_value, parse_handoff
 
 FORCED_BOUNDARY_NOTE = (
-    "호스트 때문에 보이는 답변만 한번 끊겼고 루프는 멈추지 않았습니다. "
-    "아무 후속 메시지나 보내면 같은 run을 즉시 이어갑니다."
+    "호스트가 백그라운드 실행을 이어주지 않아 final 채널로 경계 영수증을 남긴 것입니다. "
+    "루프는 목표 완료/정지로 처리되지 않았고, 아무 후속 메시지나 보내면 같은 run을 즉시 이어갑니다."
+)
+USER_VISIBLE_CONTINUE_NOTE = (
+    "사용자 표시용: 멈춘 게 아니라 호스트가 보이는 답변만 한 번 끊은 상태입니다. "
+    "다음 메시지는 같은 run 자동 재개 신호입니다."
+)
+FINAL_COPY_POLICY = "copy_closeout_gate_stdout_verbatim_no_summary_no_omission"
+USER_VISIBLE_STATUS_KO = (
+    "멈춘 것이 아닙니다. final 채널에 남긴 강제 턴 경계 영수증이며, "
+    "아무 후속 메시지나 보내면 같은 run을 자동 재개합니다."
 )
 
 
@@ -40,6 +49,8 @@ def main() -> int:
     parser.add_argument("run_dir", help="Path to the agent-loop run directory")
     parser.add_argument("--active-delta", required=True, help="Concrete in-flight delta for the started next action")
     parser.add_argument("--blocking-or-risk", help="Optional blocker or risk line")
+    parser.add_argument("--blocked-action-ko", help="Korean description of the blocked action for blocked_during_attempt")
+    parser.add_argument("--needed-condition-ko", help="Korean description of the required external/user condition for blocked_during_attempt")
     args = parser.parse_args()
 
     run_dir = Path(args.run_dir).resolve()
@@ -56,20 +67,51 @@ def main() -> int:
         print("emit_continue_reply.py requires handoff.md with run_decision=continue", file=sys.stderr)
         return 1
     host_resume_mode = clean_value(str(fields.get("host_resume_mode", "")))
-    semantic_state = "incomplete_forced_boundary" if host_resume_mode == "same_turn_only" else "in_progress_continue"
+    continue_exit_status = clean_value(str(fields.get("continue_exit_status", "")))
+    if continue_exit_status == "blocked_during_attempt":
+        if not clean_value(args.blocked_action_ko or ""):
+            print("emit_continue_reply.py requires --blocked-action-ko for blocked_during_attempt", file=sys.stderr)
+            return 1
+        if not clean_value(args.needed_condition_ko or ""):
+            print("emit_continue_reply.py requires --needed-condition-ko for blocked_during_attempt", file=sys.stderr)
+            return 1
+    if host_resume_mode == "same_turn_only":
+        semantic_state = "incomplete_forced_boundary"
+        continuation_authority = "standing"
+    elif continue_exit_status == "blocked_during_attempt":
+        semantic_state = "incomplete_blocked_pending_external"
+        continuation_authority = "blocked_pending_external"
+    else:
+        semantic_state = "in_progress_continue"
+        continuation_authority = "standing"
     lines = [
         f"loop_state={clean_value(str(fields.get('loop_state', '')))}",
         f"run_decision={clean_value(str(fields.get('run_decision', '')))}",
         f"semantic_state={semantic_state}",
-        "continuation_authority=standing",
+        f"continuation_authority={continuation_authority}",
         f"current_or_next_stage={clean_value(str(fields.get('current_or_next_stage', '')))}",
         f"next_mandatory_action={clean_value(str(fields.get('next_mandatory_action', '')))}",
         f"goal_completion_status={clean_value(str(fields.get('goal_completion_status', '')))}",
         f"turn_exit_cause={clean_value(str(fields.get('turn_exit_cause', '')))}",
         f"turn_exit_evidence={clean_value(str(fields.get('turn_exit_evidence', '')))}",
         f"active_delta={args.active_delta.strip()}",
-        "stop_status=not_stopped",
     ]
+    if continue_exit_status == "blocked_during_attempt":
+        lines.extend(
+            [
+                f"user_visible_status_ko={USER_VISIBLE_STATUS_KO}",
+                f"blocked_action_ko={clean_value(args.blocked_action_ko or '')}",
+                f"needed_condition_ko={clean_value(args.needed_condition_ko or '')}",
+                f"human_readable_reason={clean_value(args.needed_condition_ko or '')}",
+            ]
+        )
+    lines.extend(
+        [
+        "stop_status=not_stopped",
+        f"user_visible_note={USER_VISIBLE_CONTINUE_NOTE}",
+        f"final_copy_policy={FINAL_COPY_POLICY}",
+        ]
+    )
     if host_resume_mode == "same_turn_only":
         lines.extend(
             [

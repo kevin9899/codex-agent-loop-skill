@@ -3,8 +3,10 @@
 These references are non-authoritative maintainer appendices. They may explain lower-level lifecycle or packet detail, but they do not add, widen, or override the public operator contract in `SKILL.md`.
 
 > Note:
-> In normal `$loop` use, the default delegated Codex mix is 5 lanes; optional Claude evidence is capped to those same 5 viewpoints, and high-difficulty work stays capped at 5 lanes.
-> References below to `exactly three` or `exact-three` describe a legacy kernel viewpoint subset, not the full default execution mix.
+> In normal `$loop` use, material initial research uses five delegated Codex
+> lanes, while non-final challenge/verification phases use the five distinct
+> challenge lanes. Optional Claude evidence mirrors the phase-required lane
+> set.
 
 This draft does not replace the public skill documents yet. It is a working kernel spec for the next challenge rounds.
 
@@ -212,7 +214,7 @@ Cycle controller transitions:
 
 | Current State | Allowed Next State | Skip Allowed | Forced Redirect |
 | --- | --- | --- | --- |
-| `research` | `planning` | no | if the active research phase has not yet produced a merged exact-three-viewpoint research synthesis candidate, remain in `research` |
+| `research` | `planning` | no | if the active material research phase has not yet produced a merged exact-five-viewpoint research synthesis candidate, remain in `research` |
 | `planning` | `plan_challenge` | no | none |
 | `plan_challenge` | `integrate_plan` | no | none |
 | `integrate_plan` | `execute`, `cycle_decision`, terminal `planning_delivery_complete` | no | if blockers force decision before execution, go to `cycle_decision`; if immutable `request_intent=planning_deliverable_only`, the run may end after the first challenge-reviewed authoritative `revised_plan` seal instead of entering execution |
@@ -239,7 +241,7 @@ concrete `planning_delivery_complete` event in `decision_ledger` referencing the
 
 Before that event exists, stopping the run on planning-deliverable grounds is illegal.
 
-### Exact Three-Viewpoint Research Completion Rule
+### Exact Five-Viewpoint Research Completion Rule
 
 Every research phase in the kernel is exact-set complete only when it includes one lane result for
 each of these viewpoints:
@@ -247,13 +249,15 @@ each of these viewpoints:
 - `architecture_dependency`
 - `failure_verification`
 - `goal_efficiency`
+- `requirement_alignment`
+- `implementation_quality`
 
 Raw lane outputs remain draft-only.
 
 `planning` is legal only after the current research phase has produced one merged
 `research_synthesis_candidate` that records:
 
-- `research_viewpoint_set={architecture_dependency,failure_verification,goal_efficiency}`
+- `research_viewpoint_set={architecture_dependency,failure_verification,goal_efficiency,requirement_alignment,implementation_quality}`
 - concrete `lane_candidate_refs` with exactly one lane result per viewpoint from the current
   research phase
 
@@ -433,7 +437,7 @@ Worker claims are embedded substructures of `revised_plan` and `handoff_packet.o
 | `request_intent` | orchestrator | planner, run controller | immutable per run unless the user explicitly changes the ask | no | no | what delivery posture did the user explicitly request |
 | `working_goal` | orchestrator | planner, run controller | immutable per run unless the user explicitly changes the goal | no | no | what exact goal this run is pursuing |
 | `delta_ledger` | orchestrator | orchestrator, doc reflection | mutable until reflection | no | no | which blockers are already solved vs still open in the redesign |
-| `research_synthesis` | integrator | planner, run controller | immutable once referenced by sealed handoff; superseded by newer version | no | no | what fresh exact-three-viewpoint research changed the next plan or stop decision |
+| `research_synthesis` | integrator | planner, run controller | immutable once referenced by sealed handoff; superseded by newer version | no | no | what fresh exact-five-viewpoint research changed the next plan or stop decision |
 | `revised_plan` | integrator | orchestrator, workers, verifiers | immutable once published; superseded by newer snapshot | yes | no | what exact work is executable right now |
 | `decision_ledger` | integrator | audit, reflection | append-only | no | no | why each finding was accepted, rejected, or superseded |
 | `evidence_packet` | integrator | verify challengers, integrator | payload immutable once referenced by sealed handoff; `freshness_status` and `stale_reason` may flip through ledger-backed stale mutation | no | no | what evidence is being judged in the current verify pass |
@@ -1030,10 +1034,10 @@ The required `counter-check` is a mandatory block inside `research_synthesis`, n
 
 `research_synthesis` must also expose:
 
-- `research_viewpoint_set={architecture_dependency,failure_verification,goal_efficiency}`
+- `research_viewpoint_set={architecture_dependency,failure_verification,goal_efficiency,requirement_alignment,implementation_quality}`
 - concrete `lane_candidate_refs` showing exactly one merged input lane per viewpoint
 
-`continue` is legal only when fresh exact-three-viewpoint research and its counter-check jointly show at least one
+`continue` is legal only when fresh exact-five-lane research and its counter-check jointly show at least one
 admissible improvement candidate remains, or the latest authoritative `revised_plan` still has at
 least one incomplete stage with `stage_obligation=required_for_success`, with evidence refs that
 justify keeping the run open.
@@ -1052,7 +1056,7 @@ If `stop_reason=goal_saturated`, all of these must also hold:
 - the latest cycle is fully closed
 - no blocking findings remain open
 - current success condition is satisfied
-- fresh exact-three-viewpoint research finds zero admissible improvement candidates
+- fresh exact-five-viewpoint research finds zero admissible improvement candidates
 - a counter-check finds zero additional admissible improvement candidates
 - if the latest authoritative `revised_plan.run_intent=implementation_oriented`, no incomplete
   `current_stage` or `remaining_stage_queue` entry with `stage_obligation=required_for_success`

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import re
+import tempfile
 from pathlib import Path
 
 from canonicalize_handoff import canonicalize, load_fields
@@ -129,6 +130,40 @@ def derive_closeout_round_id(boundary_token: str) -> str:
     return f"legacy-refresh-{normalized or 'host-boundary'}"
 
 
+def build_host_boundary_authority_receipt(
+    run_dir: Path,
+    boundary_token: str,
+    turn_exit_evidence: str,
+    closeout_round_id: str,
+    continue_exit_evidence: str,
+) -> tuple[str, str]:
+    attempt_ref = extract_attempt_ref(continue_exit_evidence)
+    if is_noneish(attempt_ref):
+        raise ValueError("host-boundary legacy refresh requires continue_exit_evidence with resolvable attempt_ref=<in-run-artifact>")
+    attempt_path = (run_dir / attempt_ref).resolve()
+    try:
+        attempt_path.relative_to(run_dir.resolve())
+    except ValueError as exc:
+        raise ValueError("host-boundary legacy refresh requires attempt_ref to stay inside the run directory") from exc
+    if not attempt_path.exists() or not attempt_path.is_file():
+        raise ValueError("host-boundary legacy refresh requires continue_exit_evidence with resolvable attempt_ref=<in-run-artifact>")
+    receipt_rel = "authority/host-turn-boundary.md"
+    receipt = "\n".join(
+        [
+            "# Authority Receipt",
+            "authority_receipt_version=v1",
+            "authority_kind=host_turn_boundary",
+            f"event_id={boundary_token}",
+            "event_id_source=controller_generated_same_turn_boundary",
+            f"closeout_round_id={closeout_round_id}",
+            f"attempt_ref={attempt_ref}",
+            f"excerpt={turn_exit_evidence}",
+            "",
+        ]
+    )
+    return receipt_rel, receipt
+
+
 def write_host_boundary_authority_receipt(
     run_dir: Path,
     boundary_token: str,
@@ -136,24 +171,96 @@ def write_host_boundary_authority_receipt(
     closeout_round_id: str,
     continue_exit_evidence: str,
 ) -> str:
-    authority_dir = run_dir / "authority"
-    authority_dir.mkdir(parents=True, exist_ok=True)
-    receipt_path = authority_dir / "host-turn-boundary.md"
-    attempt_ref = extract_attempt_ref(continue_exit_evidence) or "none"
-    receipt = "\n".join(
-        [
-            "# Authority Receipt",
-            "authority_receipt_version=v1",
-            "authority_kind=host_turn_boundary",
-            f"event_id={boundary_token}",
-            f"closeout_round_id={closeout_round_id}",
-            f"attempt_ref={attempt_ref}",
-            f"excerpt={turn_exit_evidence}",
-            "",
-        ]
+    receipt_rel, receipt = build_host_boundary_authority_receipt(
+        run_dir,
+        boundary_token,
+        turn_exit_evidence,
+        closeout_round_id,
+        continue_exit_evidence,
     )
+    receipt_path = run_dir / receipt_rel
+    receipt_path.parent.mkdir(parents=True, exist_ok=True)
     receipt_path.write_text(receipt, encoding="utf-8")
-    return receipt_path.relative_to(run_dir).as_posix()
+    return receipt_rel
+
+
+def is_pending_host_boundary_receipt_error(error: str) -> bool:
+    lowered = error.lower()
+    return "host_boundary_ref" in lowered and (
+        "resolve to an existing" in lowered
+        or "resolve to a valid v1 authority receipt" in lowered
+        or "fresh host_boundary_ref receipt" in lowered
+    )
+
+
+def is_pending_handoff_write_freshness_error(error: str) -> bool:
+    lowered = error.lower()
+    return "relative to handoff.md" in lowered or "close to handoff.md" in lowered
+
+
+def is_prewrite_only_validation_error(error: str) -> bool:
+    return is_pending_host_boundary_receipt_error(error) or is_pending_handoff_write_freshness_error(error)
+
+
+def write_text_atomically(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w",
+            delete=False,
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            encoding="utf-8",
+        ) as handle:
+            handle.write(text)
+            temp_path = Path(handle.name)
+        temp_path.replace(path)
+    except OSError:
+        if temp_path is not None:
+            try:
+                temp_path.unlink()
+            except FileNotFoundError:
+                pass
+        raise
+
+
+def rollback_host_boundary_receipt(
+    receipt_path: Path,
+    previous_receipt: str | None,
+    previous_parent_exists: bool,
+) -> None:
+    if previous_receipt is None:
+        try:
+            receipt_path.unlink()
+        except FileNotFoundError:
+            pass
+        if not previous_parent_exists:
+            try:
+                receipt_path.parent.rmdir()
+            except OSError:
+                pass
+    else:
+        write_text_atomically(receipt_path, previous_receipt)
+
+
+def write_handoff_or_rollback_receipt(
+    handoff_path: Path,
+    rendered: str,
+    receipt_path: Path,
+    previous_receipt: str | None,
+    previous_parent_exists: bool,
+) -> None:
+    try:
+        write_text_atomically(handoff_path, rendered)
+    except OSError:
+        rollback_host_boundary_receipt(receipt_path, previous_receipt, previous_parent_exists)
+        raise
+
+
+def rollback_refreshed_handoff(handoff_path: Path, previous_handoff: str) -> None:
+    write_text_atomically(handoff_path, previous_handoff)
 
 
 def refresh_fields(
@@ -288,14 +395,19 @@ def main() -> int:
 
         closeout_round_id = derive_closeout_round_id(args.host_boundary_ref)
         host_boundary_ref = args.host_boundary_ref
+        pending_host_boundary_receipt: str | None = None
         if args.write:
-            host_boundary_ref = write_host_boundary_authority_receipt(
-                run_dir,
-                args.host_boundary_ref,
-                args.turn_exit_evidence or "forced_host_boundary_legacy_refresh",
-                closeout_round_id,
-                args.continue_exit_evidence or "none",
-            )
+            try:
+                host_boundary_ref, pending_host_boundary_receipt = build_host_boundary_authority_receipt(
+                    run_dir,
+                    args.host_boundary_ref,
+                    args.turn_exit_evidence or "forced_host_boundary_legacy_refresh",
+                    closeout_round_id,
+                    args.continue_exit_evidence or "none",
+                )
+            except ValueError as exc:
+                print(f"[FAIL] {run_dir} {exc}")
+                return 1
 
         fields = load_fields(handoff_path)
         refreshed = refresh_fields(
@@ -310,12 +422,60 @@ def main() -> int:
         rendered = canonicalize(refreshed)
         if args.write:
             validation_errors = validate_fields(refreshed, run_dir, require_consensus=True)
-            if validation_errors:
+            blocking_prewrite_errors = [
+                error
+                for error in validation_errors
+                if not is_prewrite_only_validation_error(error)
+            ]
+            if blocking_prewrite_errors:
                 print(f"[FAIL] {run_dir} failed validation before legacy refresh write")
+                for error in blocking_prewrite_errors:
+                    print(f"- {error}")
+                return 1
+            receipt_path = (run_dir / host_boundary_ref).resolve()
+            try:
+                receipt_path.relative_to(run_dir.resolve())
+            except ValueError:
+                print(f"[FAIL] {run_dir} host_boundary_ref escaped the run directory")
+                return 1
+            previous_receipt = receipt_path.read_text(encoding="utf-8") if receipt_path.exists() else None
+            previous_parent_exists = receipt_path.parent.exists()
+            previous_handoff = handoff_path.read_text(encoding="utf-8")
+            try:
+                write_text_atomically(receipt_path, pending_host_boundary_receipt or "")
+            except OSError as exc:
+                if not previous_parent_exists:
+                    try:
+                        receipt_path.parent.rmdir()
+                    except OSError:
+                        pass
+                print(f"[FAIL] {run_dir} failed to write host-boundary authority receipt: {exc}")
+                return 1
+            try:
+                write_handoff_or_rollback_receipt(
+                    handoff_path,
+                    rendered,
+                    receipt_path,
+                    previous_receipt,
+                    previous_parent_exists,
+                )
+            except OSError as exc:
+                print(f"[FAIL] {run_dir} failed to write refreshed handoff; rolled back host-boundary receipt: {exc}")
+                return 1
+            validation_errors = validate_fields(refreshed, run_dir, require_consensus=True)
+            if validation_errors:
+                rollback_host_boundary_receipt(receipt_path, previous_receipt, previous_parent_exists)
+                try:
+                    rollback_refreshed_handoff(handoff_path, previous_handoff)
+                except OSError as exc:
+                    print(f"[FAIL] {run_dir} failed validation after legacy refresh write and could not restore handoff: {exc}")
+                    for error in validation_errors:
+                        print(f"- {error}")
+                    return 1
+                print(f"[FAIL] {run_dir} failed validation after legacy refresh write; rolled back handoff and host-boundary receipt")
                 for error in validation_errors:
                     print(f"- {error}")
                 return 1
-            handoff_path.write_text(rendered, encoding="utf-8")
             print(f"[OK] refreshed {handoff_path}")
         else:
             summary = flatten_multivalue_text(refreshed.get("next_mandatory_action", ""))

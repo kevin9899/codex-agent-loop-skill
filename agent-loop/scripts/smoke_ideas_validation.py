@@ -152,6 +152,10 @@ def write_cli_fixture(run_dir: Path, ideas: str, plan_body: str, closeout_round_
                 "- `capability_mode`: `delegated_agents_authorized_by_loop_tool_available_smoke`",
                 "- `current_or_next_stage`: `explicit user stop`",
                 "- `stage_status`: `direct user stop requested`",
+                "- `current_batch`: `none`",
+                "- `risk_tier`: `tier0_trivial`",
+                "- `implementation_gate_status`: `not_applicable`",
+                "- `implementation_gate_evidence`: `none`",
                 "- `remaining_required_stages`:",
                 "  - `Implement A`",
                 "  - `Implement B`",
@@ -235,6 +239,23 @@ def main() -> int:
 
         cases = [
             ("not_material", not_material_ideas(), False),
+            (
+                "not_material_no_rationale",
+                "\n".join(
+                    [
+                        "# Ideas",
+                        "",
+                        "## Ideation Gate",
+                        "",
+                        "- `ideation_status`: `not_material`",
+                        "- `viewpoint_count`: `0`",
+                        "- `cap`: `timebox_minutes=1 candidate_limit=1 external_source_limit=1`",
+                        "- `skip_or_reopen_reason`: `ideation_not_material`",
+                        "",
+                    ]
+                ),
+                True,
+            ),
             ("pending_nonblocking", material_ideas(), False),
             ("pending_blocking", material_ideas(blocking="true"), True),
             ("validated_missing_refs", material_ideas(status="validated", refs=False), True),

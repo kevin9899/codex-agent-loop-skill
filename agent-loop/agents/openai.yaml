@@ -1,4 +1,4 @@
 interface:
   display_name: "Loop"
-  short_description: "증거, 검증, 5-agent gate로 끝까지 밀고 가는 $loop."
-  default_prompt: "Use $agent-loop to keep implementation work moving to the real final goal, treat the operator token itself as permission to use delegated spawn_agent lanes, record capability_mode with delegated_agents_authorized_by_loop plus a tool-availability suffix, keep status briefings live-state only, and require fresh viewpoint-separated 5-agent halt/completion proof before any terminal closeout."
+  short_description: "끝까지 밀고, closeout은 gate로만 내보내는 $loop."
+  default_prompt: "Use $agent-loop to keep implementation work moving to the real final goal, treat the operator token itself as permission to use delegated spawn_agent lanes, record that in capability_mode with delegated_agents_authorized_by_loop plus a tool-availability suffix, require mandatory initial 5-lane research for material non-fast-path/non-self-check work and mandatory plan lock before execution, require mandatory mini 2-lane pre/post implementation plan validation for file-changing batches, treat status/checkpoint briefings as non-stopping live-state interrupts, continue after external receipt/secret blockers by taking the next local action, and require a fresh 5-lane gpt-5.5/high-minimum completion challenge before any terminal closeout."

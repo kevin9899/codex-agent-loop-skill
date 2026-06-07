@@ -42,15 +42,26 @@ writing `handoff.md` from scratch.
   pause authority when the auto-resume `continue` shape can be encoded
 - in `same_turn_only` hosts, that `continue` receipt must include
   `stop_status=not_stopped`,
-  `forced_boundary_note=호스트 때문에 보이는 답변만 한번 끊겼고 루프는 멈추지 않았습니다. 아무 후속 메시지나 보내면 같은 run을 즉시 이어갑니다.`,
+  `forced_boundary_note=호스트가 백그라운드 실행을 이어주지 않아 final 채널로 경계 영수증을 남긴 것입니다. 루프는 목표 완료/정지로 처리되지 않았고, 아무 후속 메시지나 보내면 같은 run을 즉시 이어갑니다.`,
   `host_boundary_effect=visible_turn_only_not_goal_stop`,
   `auto_resume_trigger=any_followup_message`,
   `followup_resume_policy=auto_resume_any_followup`, and
   `resume_command=$loop <run-dir>`; this makes a later ordinary user follow-up a
   mandatory auto-resume trigger instead of a permission prompt
+- if `continue_exit_status=blocked_during_attempt`, the receipt must also carry
+  Korean user-facing blocker fields before `stop_status`:
+  `user_visible_status_ko=...`, `blocked_action_ko=...`,
+  `needed_condition_ko=...`, and `human_readable_reason=...`. The blocked action
+  and needed condition must be concrete; vague text like "확인 필요", "대기", or
+  "추후" is invalid
+- an external-gate-only state with no bounded local action remaining is not a
+  valid auto-resume continue state. If the source completion criteria allow
+  local/free work to end once user/external actions are recorded, run the fresh
+  completion proof and stop. Otherwise use a truthful external-gate pause
+  instead of telling the user any follow-up will keep executing
 - when that later follow-up arrives, record the actual resume event before new
   work with
-  `python <agent-loop-skill-dir>/scripts/record_resume_event.py <run-dir> --trigger any_followup_message`
+  `python <skill-dir>/scripts/record_resume_event.py <run-dir> --trigger any_followup_message`
   and then continue `next_mandatory_action` immediately; the event is evidence
   that the previous final-channel boundary was a visible host boundary, not a
   goal stop. The recorded `previous_continue_receipt` must match the same
@@ -58,14 +69,23 @@ writing `handoff.md` from scratch.
   explicit alignment status instead of borrowing an older continue receipt
 - for that truthful `continue` receipt, keep `stop_authorization_status=not_applicable`, `stop_consensus_status=not_applicable`, and `external_authority_basis=none`; `host_turn_boundary` as an external authority basis is reserved for the fallback pause shape
 - do not let `same_turn_only` block a lawful autonomous terminal `stop` when both fresh unanimous `5 Codex` halt proof and fresh unanimous `5 Codex` goal-completion proof already exist for the current authority snapshot
+- for authority-aware runs, terminal stop also requires a selected active
+  `run_authority_record`, compatible project adapter, current completion
+  subject, current challenge cycle, freshness revalidation, and successful CAS
+  transition to `completed`
 - treat `host_turn_boundary` as legal only when `turn_exit_cause=host_turn_boundary_pause`, `turn_exit_evidence` proves the forced visible boundary, and `continue_exit_*` proves the latest bounded action attempt
 - for `run_decision=continue` and `host_turn_boundary` pauses, keep `attempt_ref` fresh relative to the current `handoff.md`; stale attempt receipts are evidence of `voluntary_turn_close`
 - for `host_turn_boundary` pauses, require `host_boundary_ref` to resolve to a fresh authority receipt bound to the same `closeout_round_id` and `attempt_ref`
 - `handoff.md` is continuation bookkeeping, not permission to stop
+- `npm run loop:handoff` output is also continuation bookkeeping. When it reports
+  `run_decision=continue` or `completionStopAllowed=false`, it cannot justify a
+  free-form final recap; immediately start the next bounded action, dispatch the
+  required stop/completion challenge, or record a canonical no-bounded-action
+  blocker with tool evidence.
 - flat `key: value` handoffs and legacy partial schemas are invalid; refresh them before validating or resuming:
 
 ```bash
-python <agent-loop-skill-dir>/scripts/refresh_legacy_handoffs.py <run-dir> --write --continue-exit-status <next_action_started|blocked_during_attempt> --continue-exit-evidence "<latest-attempt-proof>" --turn-exit-evidence "<forced-host-boundary-proof>"
+python <skill-dir>/scripts/refresh_legacy_handoffs.py <run-dir> --write --continue-exit-status <next_action_started|blocked_during_attempt> --continue-exit-evidence "<latest-attempt-proof>" --turn-exit-evidence "<forced-host-boundary-proof>"
 ```
 
 ## Status Versus Closeout
@@ -77,7 +97,7 @@ or stop.
 - for user-visible status replies, prefer the canonical live-state gate:
 
 ```bash
-python <agent-loop-skill-dir>/scripts/emit_status_reply.py <run-dir> [--blocking-or-risk "..."]
+python <skill-dir>/scripts/emit_status_reply.py <run-dir> [--blocking-or-risk "..."]
 ```
 
 - keep the answer anchored to `loop_state`, `current_or_next_stage`,
@@ -108,10 +128,28 @@ python <agent-loop-skill-dir>/scripts/emit_status_reply.py <run-dir> [--blocking
 
 Before deciding that any visible `final` answer is allowed, re-open the live
 `handoff.md`. If `run_decision=continue`, `goal_completion_status` is not
-`verified_complete_5agent`, or `remaining_required_stages` is non-empty, a
+`verified_complete_5lane`, or `remaining_required_stages` is non-empty, a
 normal completion summary is forbidden. Keep executing the next bounded
 tool-backed action. The only lawful final-channel answer with remaining work is
 validated `closeout_gate.py` output for a genuinely forced host boundary.
+If `completionStopAllowed=false`, treat "the verified batch is done" as
+`pre_final_reassessment_required`, not as a closeout reason. The controller must
+choose one allowed transition: start the next bounded action, dispatch the
+required challenge, record a canonical no-bounded-action blocker, or emit
+validated forced-boundary gate output.
+If `loop-final-guard`, `closeout_gate.py`, `validate_continue_reply.py`,
+handoff validation, or any explicit completion gate blocks a terminal answer,
+the blocked gate result is not a public status update. Treat it as proof that
+the controller must continue or repair. A final answer that says the guard
+blocked "as expected" and names the remaining stages is a
+`blocked_guard_status_final` defect unless it is the exact validated forced
+boundary gate output.
+If the user reports "stopped" immediately after a valid same-turn-only continue
+receipt, classify the next turn as `receipt_only_final_boundary_perceived_stop`.
+Record a resume event, preserve the previous receipt/handoff as evidence, and
+run a tool-backed controller repair, validator smoke, or recorded next action
+before any further turn-ending receipt. Do not answer with a second receipt-only
+message while tools are still available.
 Also reopen the latest final-audit/completion artifacts. If the latest audit
 found gaps against the original prompt in `source.md`, a terminal stop or
 normal final summary is illegal even if older artifacts or the current
@@ -120,18 +158,20 @@ normal final summary is illegal even if older artifacts or the current
 Before any user-visible turn end:
 
 1. Refresh `ideas.md`, `research.md`, `revised-plan.md`, and `handoff.md`.
-2. Ensure `handoff.md` is canonical bullet-form v2 only.
+2. Ensure `handoff.md` is canonical bullet-form. v2 is valid for compatibility
+   and nonterminal/explicit-user-stop paths; verified autonomous terminal stops
+   use v3 work-type authority fields.
 3. Run:
 
 ```bash
-python <agent-loop-skill-dir>/scripts/validate_handoff.py <run-dir> --require-consensus
+python <skill-dir>/scripts/validate_handoff.py <run-dir> --require-consensus
 ```
 
 4. If `host_resume_mode=same_turn_only`, record concrete `turn_exit_cause` and `turn_exit_evidence` first.
 5. Emit the turn-ending reply only through:
 
 ```bash
-python <agent-loop-skill-dir>/scripts/closeout_gate.py <run-dir> [--active-delta "..." --blocking-or-risk "..."]
+python <skill-dir>/scripts/closeout_gate.py <run-dir> [--active-delta "..." --blocking-or-risk "..."]
 ```
 
 6. Do not add free-form wrap-up prose after the validated gate output.
@@ -198,7 +238,23 @@ That is not a goal stop, but it is still a loop-control defect. Repair the
 continue receipt contract and keep executing the recorded `next_mandatory_action`.
 If the receipt already contains the auto-resume fields but the user still
 perceives a stop, record a resume event and continue. Treat the perception gap
-as a host-boundary UX defect, not as a new permission checkpoint.
+as a host-boundary UX defect, not as a new permission checkpoint. Tighten the
+next receipt so the human-readable note names the final-channel host boundary
+and says that the next ordinary message is the same-run auto-resume signal.
+
+An additional receipt-only final-boundary defect is:
+
+- artifacts correctly say `continue`
+- the public receipt is syntactically valid and includes auto-resume fields
+- the host still ends the visible turn and the user reports that the loop
+  stopped
+- the controller responds with another explanation or receipt instead of
+  recording resume evidence and running a tool-backed repair or next action
+
+That defect label is `receipt_only_final_boundary_perceived_stop`. Repair by
+capturing the raw receipt/handoff, running `record_resume_event.py`, tightening
+the controller contract or deterministic script, validating the repair, and then
+continuing the recorded `next_mandatory_action`.
 
 A fourth root cause is voluntary turn close:
 
@@ -220,6 +276,17 @@ That is an illegal semantic stop even if the artifacts are otherwise valid. The
 next follow-up must be treated as auto-resume plus loop-control repair: record
 the defect, strengthen the guard, and continue the next bounded action without a
 permission checkpoint.
+
+A related blocked-guard status final defect is:
+
+- `loop-final-guard`, `closeout_gate.py`, `validate_continue_reply.py`, handoff
+  validation, or an explicit completion gate correctly rejects terminal closeout
+- the controller reports that blocked result in a normal final answer
+- the answer lists the remaining stages but does not start, dispatch, or record
+  the next bounded action
+
+That is still an illegal semantic stop. A blocked completion guard is evidence
+to keep the loop moving, not a permission slip to publish a wrap-up/status final.
 
 An additional bounded-batch defect is unverified local edit closeout:
 
@@ -334,11 +401,47 @@ That is also an illegal semantic stop. Repair by setting
 gap under `remaining_required_stages`, and immediately continuing the first
 bounded repair/verification action.
 
+## Stop-Like Failure Repair Process
+
+When a user reports that `$loop` stopped but no fresh 5-lane terminal proof or
+direct explicit user stop exists:
+
+1. Record the report as a loop-control defect, not as a permission checkpoint.
+2. Capture raw evidence: user trigger, latest visible receipt/final text,
+   `handoff.md`, `HEAD`, attempt refs, authority receipts, validator output,
+   and resume-event path.
+3. Assign one canonical defect label from the taxonomy in this file; use
+   `receipt_only_final_boundary_perceived_stop` when the receipt was valid but
+   still read as a stop to the user.
+4. If the user requests N-agent analysis, dispatch N bounded analysis lanes
+   when `spawn_agent` is available, while the controller continues local repair
+   work on the critical path.
+5. Convert the diagnosis into one enforceable invariant: illegal state,
+   required evidence, and required next transition.
+6. Put fragile enforcement in scripts or validators when possible; keep
+   `SKILL.md` to the short invariant and this reference to the detailed
+   workflow.
+7. Add or run a deterministic smoke for the exact failure mode.
+8. Record the patch, validation, residual risk, and next action in the active
+   run artifacts.
+9. Resume the original `next_mandatory_action`; do not end with a recap unless
+   canonical stop proof exists.
+
 ## Required Handoff Fields
 
 Keep these fields explicit:
 
-- `handoff_schema_version`: `v2-stop-consensus`
+- `handoff_schema_version`: `v2-stop-consensus` or `v3-worktype-authority`
+- `work_type`: `implementation`, `research`, `docs`, `planning`, `review`, or `mixed` (`not_classified` is legacy migration only)
+- `review_kind`: `not_applicable`, `plan_review`, `artifact_review`, `completion_challenge`, or `audit`
+- `authority_record_ref`, `run_authority_status`, `run_authority_revision`, and `run_authority_epoch` for v3 authority runs
+- `source_digest`, `stage_graph_digest`, `completion_subject_type`, `completion_subject_ref`, and `completion_subject_digest` for v3 authority runs
+- `challenge_cycle_ref`, `challenge_cycle_status`, and `challenge_cycle_digest_set` for v3 challenge aggregation
+- `adapter_manifest_ref`, `adapter_conformance_status`, and
+  `adapter_effective_config_digest` for project adapter compatibility
+- `research_cycle_ref`, `research_cycle_status`, and
+  `research_cycle_digest_set` for the initial five-lane research gate
+- `visible_output_contract`: `live_status`, `challenge_result`, `forced_boundary_continue`, `blocked_external_gate`, `terminal_completion`, or `not_applicable`
 - `continuation_mode`: `default` or `nonstop`
 - `host_resume_mode`: `same_turn_only` or `durable_runtime`
 - `run_decision`: `planning_complete`, `continue`, `pause`, or `stop`
@@ -348,7 +451,7 @@ Keep these fields explicit:
 - `stop_consensus_status`: `not_applicable`, `not_run`, `deny`, `allow_unanimous`, or `waived_external_authority`
 - `stop_consensus_evidence`: explicit unanimous-vote proof or external-authority waiver note
 - `external_authority_basis`: `none`, `explicit_user_pause`, `explicit_user_stop`, `explicit_user_redirect`, `human_decision_required`, or `host_turn_boundary`
-- `goal_completion_status`: `not_reached`, `completion_candidate`, or `verified_complete_5agent`
+- `goal_completion_status`: `not_reached`, `completion_candidate`, or `verified_complete_5lane`
 - `goal_completion_evidence`: explicit goal-state evidence, including fresh `5 Codex` completion proof for terminal goal-satisfied stops
 - `closeout_round_id`: current turn-ending freshness anchor that binds attempt proof and closeout proof to this exact closeout event
 - `turn_exit_cause`: `not_applicable`, `context_budget_exhausted`, `tool_timeout_after_batch_shrink`, `blocked_during_attempt`, `host_turn_boundary_pause`, or `user_interrupt`
@@ -360,7 +463,7 @@ Keep these fields explicit:
 2. Run:
 
 ```bash
-python <agent-loop-skill-dir>/scripts/validate_handoff.py <run-dir> --require-consensus
+python <skill-dir>/scripts/validate_handoff.py <run-dir> --require-consensus
 ```
 
 3. If validation fails, repair the artifacts and default to `continue`.
@@ -373,7 +476,7 @@ Treat `turn_exit_*` the same way for a turn-ending `continue` reply: a boundary 
 For a live in-progress handoff that is not a turn-close state, use `validate_handoff.py <run-dir> --require-consensus --live-state`. Do not invent `host_turn_boundary_pause` or other turn-exit evidence just to validate a live handoff while tool work remains available.
 When resuming from a previously emitted same-turn continue or pause receipt, use `validate_handoff.py <run-dir> --require-consensus --resume-state` before mutating the handoff. This permits the already-emitted `closeout_round_id` to appear in closeout receipts while still requiring a fresh `closeout_round_id` before the next turn-ending reply.
 If `host_resume_mode=same_turn_only`, trust turn-ending `continue` only when `continue_exit_*` proves the latest action was started or blocked and `turn_exit_cause=host_turn_boundary_pause` records the forced visible boundary. Otherwise classify the turn end as a pause-shape or voluntary-close defect.
-If a user reports that the loop stopped and no valid 5-agent halt proof exists, treat the report as evidence that the host should be classified `same_turn_only` unless durable background execution is directly proven.
+If a user reports that the loop stopped and no valid 5-lane halt proof exists, treat the report as evidence that the host should be classified `same_turn_only` unless durable background execution is directly proven.
 If `external_authority_basis=host_turn_boundary`, classify the immediate cause as `host_turn_boundary_pause` before looking for a semantic-stop defect. That condition is a host capability ceiling, not by itself proof that the loop yielded too early.
 If `external_authority_basis=host_turn_boundary` but `turn_exit_cause=not_applicable` or `turn_exit_evidence` is empty, reclassify it as an unproven semantic-stop defect instead of a host ceiling.
 Do not describe a `same_turn_only` host as "won't stop" in user-facing metadata. The truthful promise in that host is same-turn continuation plus resumable pause state.
@@ -383,23 +486,39 @@ Autonomous halt proof is low-freedom:
 
 - `stop_authorization_status=allow` is legal only with:
   - `stop_consensus_status=allow_unanimous`
-  - `stop_consensus_evidence=allow_count=5 deny_count=0 ambiguous_count=0 missing_count=0 challenge_round_id=<fresh-round> closeout_round_id=<current-closeout-round> subject_digest=<current-authority-digest> source_ref=source.md source_digest=<sha256(source.md)> context_mode=clean_source_first authority_basis=source_md_original_user_prompt source_requirements_reconstructed=yes claim_files_trust=untrusted_ideas_research_revised_plan_evidence_handoff repo_inspection=fresh audit_gap_count=0 scope_verdict=original_request_satisfied viewpoint_set=architecture_dependency|failure_verification|goal_efficiency|requirement_alignment|implementation_quality model_policy=resolved_strongest_hard_pin resolved_model_slug=gpt-5.5 resolved_reasoning_effort=xhigh spawn_model_binding=explicit_tool_args refs=<...>`
-- `goal_completion_status=verified_complete_5agent` is legal only with:
-  - `goal_completion_evidence=allow_count=5 deny_count=0 ambiguous_count=0 missing_count=0 challenge_round_id=<fresh-round> closeout_round_id=<current-closeout-round> subject_digest=<current-authority-digest> source_ref=source.md source_digest=<sha256(source.md)> context_mode=clean_source_first authority_basis=source_md_original_user_prompt source_requirements_reconstructed=yes claim_files_trust=untrusted_ideas_research_revised_plan_evidence_handoff repo_inspection=fresh audit_gap_count=0 scope_verdict=original_request_satisfied viewpoint_set=architecture_dependency|failure_verification|goal_efficiency|requirement_alignment|implementation_quality model_policy=resolved_strongest_hard_pin resolved_model_slug=gpt-5.5 resolved_reasoning_effort=xhigh spawn_model_binding=explicit_tool_args refs=<...>`
-- the five referenced Codex lane artifacts must cover the required viewpoint
-  set exactly once: one fresh agent for `architecture_dependency`, one for
-  `failure_verification`, one for `goal_efficiency`, one for
-  `requirement_alignment`, and one for `implementation_quality`. A duplicate
-  viewpoint, missing viewpoint, or generic/blended challenge prompt is not
-  five-agent proof.
+  - `stop_consensus_evidence=allow_count=5 deny_count=0 ambiguous_count=0 missing_count=0 challenge_round_id=<fresh-round> closeout_round_id=<current-closeout-round> agent_role=challenge_agent challenge_review_mode=autonomous_stop_challenge subject_digest=<current-authority-digest> source_ref=source.md source_digest=<sha256(raw source.md bytes)> context_mode=clean_source_first authority_basis=source_md_original_user_prompt source_requirements_reconstructed=yes claim_files_trust=untrusted_ideas_research_revised_plan_evidence_handoff repo_inspection=fresh audit_gap_count=0 scope_verdict=original_request_satisfied route_context=final_halt_completion loaded_policy_refs=SKILL.md#NonNegotiableInvariants|handoff-template.md#FinalProof policy_ref_digests=sha256:<skill-digest>|sha256:<template-digest> policy_coverage_verdict=route_required_refs_loaded viewpoint_set=architecture_dependency|failure_verification|goal_efficiency|requirement_alignment|implementation_quality coverage_viewpoint_set=architecture_dependency|failure_verification|goal_efficiency|requirement_alignment|implementation_quality model_policy=gpt_5_5_high_minimum_explicit top_model_lane_min=5 resolved_model_slug=gpt-5.5 resolved_reasoning_effort=xhigh spawn_model_binding=explicit_tool_args refs=<...>`
+- `goal_completion_status=verified_complete_5lane` is legal only with:
+  - `handoff_schema_version=v3-worktype-authority` for autonomous terminal stop.
+  - `goal_completion_evidence=allow_count=5 deny_count=0 ambiguous_count=0 missing_count=0 challenge_round_id=<fresh-round> closeout_round_id=<current-closeout-round> agent_role=challenge_agent challenge_review_mode=goal_completion_challenge subject_digest=<current-authority-digest> source_ref=source.md source_digest=<sha256(raw source.md bytes)> context_mode=clean_source_first authority_basis=source_md_original_user_prompt source_requirements_reconstructed=yes claim_files_trust=untrusted_ideas_research_revised_plan_evidence_handoff repo_inspection=fresh audit_gap_count=0 scope_verdict=original_request_satisfied route_context=final_halt_completion loaded_policy_refs=SKILL.md#NonNegotiableInvariants|handoff-template.md#FinalProof policy_ref_digests=sha256:<skill-digest>|sha256:<template-digest> policy_coverage_verdict=route_required_refs_loaded viewpoint_set=architecture_dependency|failure_verification|goal_efficiency|requirement_alignment|implementation_quality coverage_viewpoint_set=architecture_dependency|failure_verification|goal_efficiency|requirement_alignment|implementation_quality model_policy=gpt_5_5_high_minimum_explicit top_model_lane_min=5 resolved_model_slug=gpt-5.5 resolved_reasoning_effort=xhigh spawn_model_binding=explicit_tool_args refs=<...>`
+- for v3 authority runs, both stop and goal-completion evidence must also bind
+  to `authority_record_ref`, `authority_revision`, `authority_epoch`,
+  `source_digest`, `adapter_manifest_ref`, `adapter_effective_config_digest`,
+  `completion_subject_type`, `completion_subject_digest`, `stage_graph_digest`,
+  `challenge_cycle_ref`, and `challenge_cycle_digest_set`. The terminal reply
+  is invalid if any of those fields changed after the accepted challenge cycle.
+- the five referenced Codex lane artifacts must cover the required final lane
+  set exactly once: one fresh agent for each of `architecture_dependency`,
+  `failure_verification`, `goal_efficiency`, `requirement_alignment`, and
+  `implementation_quality`. A duplicate lane, missing lane, uncovered viewpoint,
+  or generic challenge prompt is not five-lane proof.
+- all five lanes must be final challenge agents. Each lane artifact and its
+  dispatch receipt must carry `agent_role=challenge_agent` plus
+  `challenge_review_mode=autonomous_stop_challenge` for
+  `phase=stop_authorization` or
+  `challenge_review_mode=goal_completion_challenge` for
+  `phase=goal_completion`; any worker, explorer, summarizer, or generic
+  reviewer lane is inadmissible.
 - each referenced halt-lane artifact must exist and carry:
   - `phase=stop_authorization`
+  - `agent_role=challenge_agent`
+  - `challenge_review_mode=autonomous_stop_challenge`
   - `vote=allow`
-  - `viewpoint=<required-viewpoint>`
+  - `viewpoint=<required-final-lane>`
+  - `coverage_viewpoints=<same required final lane>`
   - `challenge_round_id=<same fresh-round>`
   - `subject_digest=<same current-authority-digest>`
   - `source_ref=source.md`
-  - `source_digest=<sha256(source.md)>`
+  - `source_digest=<sha256(raw source.md bytes)>`
   - `context_mode=clean_source_first`
   - `authority_basis=source_md_original_user_prompt`
   - `source_requirements_reconstructed=yes`
@@ -407,22 +526,36 @@ Autonomous halt proof is low-freedom:
   - `repo_inspection=fresh`
   - `audit_gap_count=0`
   - `scope_verdict=original_request_satisfied`
-  - `model_policy=resolved_strongest_hard_pin`
-  - `resolved_model_slug=gpt-5.5`
-  - `resolved_reasoning_effort=xhigh`
+  - `route_context=final_halt_completion`
+  - `loaded_policy_refs=AGENTS.md#LoopCompletionGate|SKILL.md#NonNegotiableInvariants|handoff-template.md#FinalProof` when a bound repo root contains `AGENTS.md`; otherwise omit both the `AGENTS.md#LoopCompletionGate` token and `<agents-digest>`
+  - `policy_ref_digests=sha256:<agents-digest>|sha256:<skill-digest>|sha256:<template-digest>` when `AGENTS.md#LoopCompletionGate` is required; otherwise `policy_ref_digests=sha256:<skill-digest>|sha256:<template-digest>`
+  - `policy_coverage_verdict=route_required_refs_loaded`
+  - `model_policy=gpt_5_5_high_minimum_explicit`
+  - `resolved_model_slug=<lane-model-gpt-5.5-or-stronger>`
+  - `resolved_reasoning_effort=<lane-effort>`
   - `model_resolution_basis_ref=<catalog-or-skill-ref>`
   - `spawn_model_binding=explicit_tool_args`
-  - `spawn_tool_args_model=gpt-5.5`
-  - `spawn_tool_args_reasoning_effort=xhigh`
+  - `spawn_tool_args_model=<same-lane-model>`
+  - `spawn_tool_args_reasoning_effort=<same-lane-effort>`
   - `spawn_tool_call_ref=<dispatch receipt>`
   - `freshness_status=fresh|current_pass|current_cycle`
   - `agent_id=<unique>`
+- across the five lane artifacts, exactly three of the five lanes must carry
+  `resolved_model_slug=gpt-5.5` and `resolved_reasoning_effort=xhigh`, two
+  lanes must carry `resolved_model_slug=gpt-5.5` and
+  `resolved_reasoning_effort=high`
+- no lane artifact or dispatch receipt may use `resolved_reasoning_effort=low`
+  or `resolved_reasoning_effort=medium`
 - each referenced goal-completion lane artifact must carry the same
   source-first fields plus
+  `challenge_review_mode=goal_completion_challenge` and
   `source_alignment_verdict=all_source_requirements_satisfied`
 - each `spawn_tool_call_ref` must resolve to a v1 in-run dispatch receipt bound
   to the same phase, agent id, viewpoint, challenge round, closeout round,
-  `source_digest`, explicit model args, `context_mode=clean_source_first`, and
+  `source_digest`, `agent_role=challenge_agent`, the phase-specific
+  `challenge_review_mode`, explicit model args, route metadata
+  (`route_context`, `loaded_policy_refs`, `policy_ref_digests`,
+  `policy_coverage_verdict`), `context_mode=clean_source_first`, and
   `full_history_fork=false`
 - each `refs=` path must resolve inside the current run directory; absolute or escaped paths to unrelated artifacts are illegal
 - any missing, ambiguous, failed, or denying required Codex halt lane means default to `continue`
@@ -455,7 +588,7 @@ remain unsupported unless the host can provide immutable authority outside the
 mutable run directory.
 
 If `external_authority_basis=human_decision_required`, record
-`human_decision_gate=unresolved_after_5_codex` in `stop_authorization_evidence`.
+`human_decision_gate=unresolved_after_3_codex` in `stop_authorization_evidence`.
 
 ## Decision Matrix
 
@@ -463,7 +596,7 @@ If `external_authority_basis=human_decision_required`, record
   - use when the next stage is explicit, a blocker does not require human authority, halt validation fails, or the clean final audit finds any original-prompt gap
 - `pause`
   - use when the next mandatory action is explicit, a concrete reason exists, and authorization is either:
-    - `allow` plus unanimous 5-agent halt proof
+    - `allow` plus unanimous 5-lane halt proof
     - `external_authority` plus an explicit waiver basis
   - keep `goal_completion_status=not_reached` unless implementation looks done but the fresh completion challenge still has not run, in which case use `completion_candidate`
 - `stop`
@@ -492,7 +625,7 @@ is being generated by the live challenge itself.
 - `run_decision=continue` with `current_or_next_stage: none`
 - `run_decision=continue` with `next_mandatory_action: none`
 - any pause or stop state that omits `goal_completion_status` or `goal_completion_evidence`
-- `run_decision=stop` without `goal_completion_status=verified_complete_5agent` unless the basis is a direct explicit user stop
+- `run_decision=stop` without `goal_completion_status=verified_complete_5lane` unless the basis is a direct explicit user stop
 - `run_decision=planning_complete` without `run_intent=planning_only`
 - `run_decision=planning_complete` in a nonstop run
 - `run_decision=planning_complete` without a scoped external-authority record
@@ -520,13 +653,14 @@ is being generated by the live challenge itself.
 - `run_decision=pause|stop` with `stop_authorization_status=not_run`
 - `run_decision=pause|stop` with `stop_authorization_status=allow` but without `stop_consensus_status=allow_unanimous`
 - `run_decision=pause|stop` with `stop_consensus_status=allow_unanimous` but without `allow_count=5 deny_count=0 ambiguous_count=0 missing_count=0` proof
+- `stop_consensus_status=allow_unanimous` or `goal_completion_status=verified_complete_5lane` without `agent_role=challenge_agent` and the matching phase-specific `challenge_review_mode` in aggregate evidence, every lane artifact, and every dispatch receipt
 - `stop_consensus_status=allow_unanimous` without source-first clean audit tokens: `source_ref=source.md`, matching `source_digest`, `context_mode=clean_source_first`, `audit_gap_count=0`, and `scope_verdict=original_request_satisfied`
-- `goal_completion_status=verified_complete_5agent` without source-first clean audit tokens or without lane artifacts carrying `source_alignment_verdict=all_source_requirements_satisfied`
+- `goal_completion_status=verified_complete_5lane` without source-first clean audit tokens or without lane artifacts carrying `source_alignment_verdict=all_source_requirements_satisfied`
 - any final audit proof that treats `ideas.md`, `research.md`, `revised-plan.md`, `evidence.md`, or `handoff.md` as the scope authority instead of untrusted implementation claims checked against `source.md`
 - `run_decision=pause|stop` with `stop_authorization_status=external_authority` but without `stop_consensus_status=waived_external_authority`
 - `stop_authorization_status=external_authority` with `external_authority_basis=none`
 - `stop_authorization_status=external_authority` justified only by "bounded objective complete", "goal satisfied", or similar inferred closure
-- `external_authority_basis=human_decision_required` without `human_decision_gate=unresolved_after_5_codex`
+- `external_authority_basis=human_decision_required` without `human_decision_gate=unresolved_after_3_codex`
 - `external_authority_basis=explicit_user_pause` without `user_pause_ref=<...>`
 - `external_authority_basis=explicit_user_redirect` without `user_redirect_ref=<...>`
 - `external_authority_basis=host_turn_boundary` without `host_boundary_ref=<authority-receipt-path>`
@@ -565,13 +699,17 @@ When `continuation_mode=nonstop` and `run_decision=continue`:
    - `turn_exit_evidence=<what boundary forced the continue reply>`
    - if `host_resume_mode=same_turn_only`, first record a fresh authority
      receipt with
-     `python <agent-loop-skill-dir>/scripts/record_host_boundary_receipt.py <run-dir> --evidence "<forced visible boundary proof>"`
+     `python <skill-dir>/scripts/record_host_boundary_receipt.py <run-dir> --evidence "<forced visible boundary proof>"`
      and include `host_boundary_ref=<that-receipt>` inside `turn_exit_evidence`
    - for delegated-agent usage limits, keep `turn_exit_cause` as the visible
      host boundary in same-turn-only hosts; put the quota blocker in
      `continue_exit_evidence` and `blocking_or_risk`
 5. After those lines, use only:
    - `active_delta=...`
+   - `user_visible_status_ko=...` for `blocked_during_attempt`
+   - `blocked_action_ko=...` for `blocked_during_attempt`
+   - `needed_condition_ko=...` for `blocked_during_attempt`
+   - `human_readable_reason=...` for `blocked_during_attempt`
    - `stop_status=not_stopped`
    - `host_boundary_effect=visible_turn_only_not_goal_stop` for `same_turn_only`
    - `auto_resume_trigger=any_followup_message` for `same_turn_only`
@@ -585,13 +723,13 @@ When `continuation_mode=nonstop` and `run_decision=continue`:
 9. Generate the reply mechanically:
 
 ```bash
-python <agent-loop-skill-dir>/scripts/closeout_gate.py <run-dir> --active-delta "..." [--blocking-or-risk "..."]
+python <skill-dir>/scripts/closeout_gate.py <run-dir> --active-delta "..." [--blocking-or-risk "..."] [--blocked-action-ko "..."] [--needed-condition-ko "..."]
 ```
 
 10. Validate the draft or generated reply with:
 
 ```bash
-python <agent-loop-skill-dir>/scripts/validate_continue_reply.py <reply.txt> --run-dir <run-dir>
+python <skill-dir>/scripts/validate_continue_reply.py <reply.txt> --run-dir <run-dir>
 ```
 
    - stdin is also allowed
@@ -662,13 +800,13 @@ When `host_resume_mode=same_turn_only` and live remaining work still exists:
    - generate it mechanically:
 
 ```bash
-python <agent-loop-skill-dir>/scripts/closeout_gate.py <run-dir>
+python <skill-dir>/scripts/closeout_gate.py <run-dir>
 ```
 
    - validate the draft or generated reply with:
 
 ```bash
-python <agent-loop-skill-dir>/scripts/validate_pause_reply.py <reply.txt> --run-dir <run-dir>
+python <skill-dir>/scripts/validate_pause_reply.py <reply.txt> --run-dir <run-dir>
 ```
 
    - stdin is also allowed

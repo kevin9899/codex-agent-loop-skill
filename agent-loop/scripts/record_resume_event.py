@@ -97,6 +97,7 @@ def main() -> int:
                 f"previous_continue_receipt: {rel_or_name(previous_receipt, run_dir)}",
                 f"previous_continue_receipt_alignment: {previous_receipt_alignment}",
                 "root_cause: same_turn_only host made the previous continue receipt visible as a final turn boundary and did not keep background execution alive",
+                "perceived_stop_cause: final-channel continue receipt or abridged closeout output can read like a stop unless the exact gate stdout is preserved",
                 "resume_decision: continue_immediately_without_permission_prompt",
                 f"next_mandatory_action: {next_action}",
                 "stop_status: not_stopped",

@@ -4,9 +4,9 @@
 > The default `$loop` contract is the pragmatic resumable profile in `../SKILL.md`.
 > This document preserves stricter high-rigor rules for runtime design, packet validation, and receipt-heavy protocol work.
 > If the environment does not provide durable delegated state, persisted handoff should take precedence over same-invocation receipt choreography.
-> The default live Codex contract is `5 Codex` research, `5 Codex` plan challenge, local execution, fresh `5 Codex` verify, and `5 Codex` autonomous halt review.
+> The default live Codex contract is mandatory `5 Codex` initial research for material non-fast-path/non-self-check work, mandatory plan lock, mandatory mini `2 Codex` pre/post implementation plan validation for delegated file-changing batches, local execution, fresh `5 Codex` verify/challenge where applicable, and `5 Codex` autonomous halt/completion review. Validator-recognized tier0/tier1 deterministic fast paths may skip delegated initial research only with explicit fast-path evidence, and ordinary `tier1_local` work may use structured self-check evidence when risk does not expand.
 > Claude is opt-in evidence only and must not be invented or counted unless the user explicitly asked for Claude on that run.
-> References below to `exactly three` or `exact-three` describe a legacy kernel viewpoint subset and must not override the pragmatic default contract in `../SKILL.md`.
+> Non-final challenge/verification phases use the same five distinct Codex challenge viewpoints as final proof.
 
 ## Core Invariants
 
@@ -49,18 +49,54 @@ Use this file for the operating rules. Use the validated kernel docs when the qu
 - Record that grant directly in the authoritative handoff as
   `capability_mode=delegated_agents_authorized_by_loop_<tool-state>`. Tool
   availability is a runtime state suffix, not a second permission checkpoint.
-- Before any delegated lane dispatch, resolve one concrete model pin from the local runtime config plus the current local model catalog.
-- If that resolution succeeds, every loop lane in the live invocation must use the same exact `resolved_model_slug` and `resolved_reasoning_effort`.
-- In the current local Codex environment, the resolved hard pin is `gpt-5.5` with `xhigh` unless the runtime config/catalog changes before dispatch.
-- `strongest available` is a single pre-dispatch resolution step, not a per-lane heuristic.
-- Every delegated loop lane must pass that pin explicitly on the actual `spawn_agent` tool call through `model=<resolved_model_slug>` and `reasoning_effort=<resolved_reasoning_effort>`.
+- Before any delegated lane dispatch, resolve an explicit lane model from the local runtime config plus the current local model catalog.
+- If that resolution succeeds, every loop lane must use
+  `frontier_loop_authority_v1/high` or stronger. In the current local catalog
+  that resolves to `gpt-5.5/high`; 5.4, Spark, 5.3, mini-model, `low`, and
+  `medium` fallback are inadmissible.
+- Plan authority and final ratification must include the strongest available
+  Codex model. In the current local Codex environment, that is `gpt-5.5` with
+  `xhigh`.
+- Implementation strategy must be authored or ratified with strongest-model
+  authority (`gpt-5.5/xhigh` in the current catalog). For `tier2_material` and
+  `tier3_high_risk` batches, pre-implementation and post-implementation
+  challenge panels use the five-lane mix: three `gpt-5.5/xhigh` lanes and two
+  `gpt-5.5/high` lanes.
+- Mandatory mini pre/post implementation plan validation uses the two-lane mix:
+  one `gpt-5.5/xhigh` lane and one `gpt-5.5/high` lane.
+- Bounded implementation workers must also use at least
+  `frontier_loop_authority_v1/high`.
+- Material initial research and halt/completion proof must use the required
+  five-lane mix: three `gpt-5.5/xhigh` lanes and two `gpt-5.5/high` lanes.
+- Every delegated loop lane must pass its lane model explicitly on the actual `spawn_agent` tool call through `model=<resolved_model_slug>` and `reasoning_effort=<resolved_reasoning_effort>`.
 - Omitting either tool-call field is illegal because inherited or default selection may silently downshift.
 - Every halt/completion proof artifact must record `spawn_model_binding=explicit_tool_args`, `spawn_tool_args_model=<resolved_model_slug>`, `spawn_tool_args_reasoning_effort=<resolved_reasoning_effort>`, and `spawn_tool_call_ref=<dispatch evidence>`; artifacts that only record claimed model policy without the dispatch binding are inadmissible.
-- Never downshift any loop lane for latency, cost, convenience, hidden defaults, or per-lane heuristics.
-- Treat any delegated output produced without the resolved hard pin, or with a weaker model/effort pair, as inadmissible and rerun that lane.
-- Advisory external Claude lanes are allowed during research phases and the autonomous-halt `stop_authorization` gate only when the current run records explicit user/operator opt-in for external Claude use; `claude` CLI availability alone is never authorization. They do not count as delegated loop lanes under the Stage 6 packet contract.
+- Final halt/completion aggregate proof, lane artifacts, and dispatch receipts
+  must also carry route-policy metadata:
+  `route_context=final_halt_completion`, `loaded_policy_refs` including the
+  global refs `SKILL.md#NonNegotiableInvariants` and
+  `handoff-template.md#FinalProof`, plus `AGENTS.md#LoopCompletionGate`
+  whenever a bound repo root contains `AGENTS.md`, plus any project policy refs
+  declared by the adapter, valid `policy_ref_digests` for exactly those refs,
+  and
+  `policy_coverage_verdict=route_required_refs_loaded`.
+- For delegated lane receipt files outside the full handoff proof path, use
+  `node scripts/loop-delegated-receipt-check.mjs --file <receipt>` or
+  `--dir <receipts> --expect-panel-mix` to fail closed on missing explicit
+  model pins, weak models, omitted policy refs, or an invalid panel mix.
+- Never downshift any loop lane below `frontier_loop_authority_v1/high` for latency, cost, convenience, hidden defaults, separate usage buckets, or per-lane heuristics.
+- Treat any delegated output produced without an explicit lane model, with 5.4, Spark/5.3/mini, with `low`/`medium` reasoning effort, or with a weaker-than-required capability class as inadmissible and rerun that lane.
+- Advisory external Claude lanes are allowed during research phases and as
+  evidence-only autonomous-halt probes only when the current run records
+  explicit user/operator opt-in for external Claude use; `claude` CLI
+  availability alone is never authorization. They do not count as delegated
+  loop lanes under the Stage 6 packet contract and never replace the required
+  five Codex halt/completion proof.
 - When advisory Claude lanes are explicitly opted in, dispatch them through `scripts/run-claude-research.mjs`, keep them to one fresh session per viewpoint, and pin them separately to `CLAUDE_CODE_HIGHEST_MODEL` or `opus` with `max` effort. Permission bypass flags require a separate explicit opt-in through `--dangerously-bypass-permissions` or `AGENT_LOOP_CLAUDE_BYPASS_PERMISSIONS=1`.
-- Advisory Claude outputs are evidence-only inputs for the research merge and autonomous-halt gate; they never replace the five authoritative Codex research lanes, they cannot authorize halt on their own, and they never carry challenge, verify, or worker authority.
+- Advisory Claude outputs are evidence-only inputs for the research merge and
+  autonomous-halt gate; they never replace the required Codex lanes, they
+  cannot authorize halt on their own, and they never carry challenge, verify,
+  or worker authority.
 - Before every delegated dispatch, perform a tool-call preflight against actual runtime constraints.
 - For `spawn_agent`, respect mutually exclusive fields such as `message` vs `items` and any runtime rule that rejects explicit model/effort overrides when full-history fork is used.
 - A rejected delegated tool call is an orchestration failure, not a legal pause or stop reason.
@@ -161,27 +197,34 @@ Before the first plan lock:
   `capability_mode=delegated_agents_authorized_by_loop_<tool_available|tool_unavailable|tool_state_unknown>`
   before dispatch; delegated-agent unavailability is a runtime constraint, not
   a missing permission grant
-- use local Research only and record `delegated_research_not_material` when the
-  goal is deterministic, file-local, or already constrained by a concrete next
-  action
-- when delegated Research is material because uncertainty, cross-system
-  behavior, external methods, or plan shape could change, run exactly five
-  viewpoint-separated research agents in parallel:
+- run exactly five Codex research agents in parallel before the
+  first plan lock for material non-fast-path/non-self-check work:
   - `architecture_dependency`
   - `failure_verification`
   - `goal_efficiency`
   - `requirement_alignment`
   - `implementation_quality`
+- validator-recognized tier0/tier1 deterministic fast paths may skip delegated
+  initial research only when they record `fast_path_reason`, a minimal plan,
+  requirement trace, local verification result/ref, no external/API/DB/security
+  scope, and reversibility evidence
+- validator-recognized ordinary `tier1_local` self-check may skip delegated
+  initial research only when it records `tier1_self_check=pass`,
+  `risk_expanded=false`, implementation summary, verification plan, requirement
+  trace, local verification result/ref, scoped files, and no
+  external/API/DB/security/shared-boundary scope
 - require each Codex research lane artifact to include the resolved model slug,
   reasoning effort, model-resolution basis, explicit spawn args, and dispatch
   receipt; omitted/default/inherited model selection is inadmissible
 - if explicit external-Claude opt-in is recorded for the current run and `claude`
-  CLI is available, optionally run the same viewpoints in parallel through
+  CLI is available, optionally run the same five distinct lanes in parallel through
   `scripts/run-claude-research.mjs` as advisory external evidence
-- planning may consume fresh research only after either
-  `delegated_research_not_material` is recorded with rationale or those five
-  lane outputs are merged into one research synthesis with concrete refs for all
-  five viewpoints
+- planning may consume fresh research only after those five lane outputs are
+  merged into one research synthesis with concrete refs for all five lanes.
+  Missing, skipped,
+  timed-out, blocked, or inherited/default-model initial research lanes block
+  plan lock instead of creating a local-only bypass outside the deterministic
+  fast path.
 - advisory Claude output, when present, must be merged by the main CLI before planning consumes the research result
 - write research synthesis as decision-relevant `evidence -> plan impact`,
   including negative evidence that rules out an approach or proves a constraint
@@ -204,24 +247,48 @@ Before the first plan lock:
   is backed by cited inspection, official-doc/runtime evidence, delegated-lane
   receipts, or explicit blocker records
 
+Before any material file-changing implementation outside validator-recognized
+deterministic fast paths and structured `tier1_local` self-check paths:
+
+- produce or refresh the authoritative `revised-plan.md`; direct execution from
+  source intake or research is invalid even for surgical fixes
+- ratify the plan with strongest-model authority and record
+  `plan_model_policy=strongest_model_required`, `plan_model_slug=gpt-5.5`, and
+  `plan_reasoning_effort=xhigh`
+- run the mandatory mini two-lane plan validation:
+  - `operator_execution_fit` checks patch order, ownership boundaries,
+    shared-state risk, rollback/conflict handling, and practical execution
+  - `verification_evidence_fit` checks the smallest useful verification,
+    failure interpretation, edge cases, and evidence refs
+- planning may lock only after both mini lanes return `pass`/`allow`; blocked
+  lanes make retrying mini plan validation the next mandatory action
+- deterministic tier0/tier1 fast paths and ordinary `tier1_local` self-check
+  paths use the lighter evidence shape defined in `../SKILL.md` and
+  `handoff-template.md`; they do not run this mandatory mini validation unless
+  risk expands or the chosen strategy delegated the mini gate
+
 After any cycle closes through `commit|rescope|escalate`:
 
-- run a fresh research pass
-- run the same exact five viewpoint-separated research lanes again
+- run a fresh research pass when new evidence, new constraints, material risk,
+  or remaining-stage uncertainty can change the next action
+- run the same exact five research lanes again for non-fast-path
+  material reassessment
 - if explicit external-Claude opt-in is recorded for the current run and
   `claude` CLI is available, rerun the advisory Claude lanes on the same
-  viewpoints before sealing reassessment synthesis
+  composite lanes before sealing reassessment synthesis
 - search for a better next ordering
 - search for higher-quality implementation paths
 - search for newly visible debt or missing work related to the same goal
 
 During goal-level reassessment, including when the current plan appears exhausted:
 
-- run a goal-level research sweep
-- run the same exact five viewpoint-separated research lanes again
+- run a goal-level research sweep unless the validator-recognized deterministic
+  fast path still fully explains the remaining work
+- run the same exact five research lanes again for non-fast-path
+  goal-level reassessment
 - if explicit external-Claude opt-in is recorded for the current run and
   `claude` CLI is available, rerun the advisory Claude lanes on the same
-  viewpoints before the goal-level continue/stop merge
+  composite lanes before the goal-level continue/stop merge
 - compare the original objective with the current codebase state
 - continue into a new plan cycle if meaningful improvement remains
 - for implementation-oriented runs, stop only later through `goal_reassessment -> run_decision`, either because research concludes that no meaningful improvement remains or because an escalated lineage ends in `stop_escalation_halt`; planning-deliverable-only runs remain the separate terminal `planning` closure path
@@ -231,16 +298,21 @@ During goal-level reassessment, including when the current plan appears exhauste
 Before any autonomous user-visible `live_pause` or terminal stop:
 
 - run a distinct `stop_authorization` gate after `goal_reassessment -> run_decision`
-- use the same capped five-viewpoint set:
+- use the five-lane final viewpoint set:
   - `architecture_dependency`
   - `failure_verification`
   - `goal_efficiency`
   - `requirement_alignment`
   - `implementation_quality`
-- dispatch exactly one fresh Codex agent per viewpoint; duplicate viewpoints,
-  missing viewpoints, or generic all-purpose challenge prompts do not count as
-  the final five-agent gate
-- dispatch the full `5 Codex` halt gate even if the earlier research or challenge phases stayed on the legacy exact-three subset
+- dispatch exactly one fresh Codex agent per final lane; duplicate lanes,
+  missing lanes, uncovered old-scope viewpoints, or generic all-purpose
+  challenge prompts do not count as the final five-lane gate
+- dispatch those final lanes as challenge agents only. The prompt, aggregate
+  evidence, lane artifact, and dispatch receipt must all bind
+  `agent_role=challenge_agent`; `stop_authorization` lanes use
+  `challenge_review_mode=autonomous_stop_challenge`, and goal-completion lanes
+  use `challenge_review_mode=goal_completion_challenge`.
+- dispatch the full `5 Codex` halt gate
 - add matching `5 Claude` lanes only when Claude was explicitly requested and actually executed for that run
 - require each lane to return an explicit halt verdict of `allow` or `deny`
 - treat any missing lane, failed lane, parse failure, or ambiguous wording as `deny`
@@ -280,13 +352,13 @@ Minimum sections for reconstructed revised plans:
 
 Every plan challenge phase must run exactly five challengers in parallel:
 
-- `architecture_dependency`
-- `failure_verification`
-- `goal_efficiency`
-- `requirement_alignment`
-- `implementation_quality`
+- `architecture_dependency` covering architecture, dependencies, and adapter boundaries
+- `failure_verification` covering failure modes and verification risks
+- `goal_efficiency` covering avoidable friction and sequencing
+- `requirement_alignment` covering the explicit user ask and success criteria
+- `implementation_quality` covering maintainability and production-readiness
 
-Those challengers must all use the same resolved hard pin for the live invocation.
+Those challengers must all use `gpt-5.5/high` or stronger.
 
 Required rules:
 
@@ -439,14 +511,23 @@ Before a stage may close:
 
 - run the defined checks
 - collect direct evidence
-- run exactly five fresh verify challengers in parallel:
-  - `architecture_dependency`
-  - `failure_verification`
-  - `goal_efficiency`
-  - `requirement_alignment`
-  - `implementation_quality`
+- for file-changing accepted gates outside deterministic fast paths and the
+  structured tier1 self-check path, record a distinct `verification_agent_ref`
+  produced by `agent_role=verification_agent`; verify challengers judge that
+  artifact, but do not replace it
+- run exactly five fresh verify challengers in parallel for material
+  challenge-required stages. Tier0 deterministic gates and ordinary
+  `tier1_local` gates with validator-recognized self-check evidence may close
+  the implementation batch after local verification without delegated verify
+  challengers:
+  - `architecture_dependency` covering architecture, dependencies, and adapter boundaries
+  - `failure_verification` covering failure modes and verification risks
+  - `goal_efficiency` covering avoidable friction and sequencing
+  - `requirement_alignment` covering the explicit user ask and success criteria
+  - `implementation_quality` covering maintainability and production-readiness
 
-Those verify challengers must all use the same resolved hard pin for the live invocation.
+When required, those verify challengers must all use `gpt-5.5/high` or
+stronger.
 
 Required rules:
 

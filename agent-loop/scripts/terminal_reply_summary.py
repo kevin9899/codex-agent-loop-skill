@@ -4,7 +4,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from validate_handoff import clean_value, is_noneish
+from validate_handoff import REQUIRED_DELEGATED_AGENT_COUNT, clean_value, is_noneish
 
 STOP_REPLY_PREFIXES = [
     "loop_state=",
@@ -289,9 +289,9 @@ def items_matching_patterns(items: list[str], patterns: list[str]) -> list[str]:
 def proof_summary_items(fields: dict[str, object]) -> list[str]:
     items: list[str] = []
     if clean_value(str(fields.get("stop_consensus_status", ""))) == "allow_unanimous":
-        items.append("5-agent halt proof allow_unanimous")
+        items.append(f"{REQUIRED_DELEGATED_AGENT_COUNT}-lane halt proof allow_unanimous")
     if clean_value(str(fields.get("goal_completion_status", ""))).startswith("verified_complete_"):
-        items.append("5-agent completion proof verified")
+        items.append(f"{REQUIRED_DELEGATED_AGENT_COUNT}-lane completion proof verified")
     proof_text = " ".join(
         clean_value(str(fields.get(name, ""))).lower()
         for name in ("stop_consensus_evidence", "goal_completion_evidence")
